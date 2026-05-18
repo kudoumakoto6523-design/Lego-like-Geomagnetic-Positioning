@@ -10,6 +10,8 @@ from gstools import Gaussian, krige
 from pykrige.ok import OrdinaryKriging
 import numpy as np
 
+from Geomag.own_dataset_registry import get_own_dataset_spec, get_own_route_xy_m
+
 UJI_ZIP_URL = "https://archive.ics.uci.edu/static/public/343/ujiindoorloc%2Bmag.zip"
 MARKER_RE = re.compile(r"<\d+>")
 _SENSOR_STATE = {
@@ -17,6 +19,7 @@ _SENSOR_STATE = {
     "key": None,
     "frames": None,
     "index": 0,
+    "dt": 0.02,
 }
 _STEP_CONFIG = {
     "judge_method": "peak_dynamic",
@@ -38,6 +41,7 @@ _ALGO_STATE = {
     "last_sensor_frame": None,
     "last_step_samples": None,
     "heading_rad": 0.0,
+    "is_heading_initialized": False,
     "heading_debug": {},
 }
 
@@ -372,6 +376,12 @@ def _build_own_map_interface(
 
     grid_path = Path(own_grid_map_path) if own_grid_map_path is not None else None
     default_meta = {
+        "tile_count_x": 12,
+        "tile_count_y": 8,
+        "tile_size_x_m": 0.96,
+        "tile_size_y_m": 1.10,
+        "anchor": "center",
+        "flip_y": True,
         "cell_size_m": None,
         "origin_xy_m": [0.0, 0.0],
         "x_axis_direction": "east",
@@ -381,6 +391,8 @@ def _build_own_map_interface(
     merged_meta = dict(default_meta)
     if isinstance(own_grid_meta, dict):
         merged_meta.update(own_grid_meta)
+    if merged_meta.get("cell_size_m") is None:
+        merged_meta["cell_size_m"] = merged_meta.get("tile_size_x_m", 0.96)
 
     grid_input_specs = {
         "array": {
@@ -426,11 +438,109 @@ def _build_own_map_interface(
             "matrix_convention": {
                 "indexing": "row-major",
                 "value": "magnetic magnitude",
-                "world_mapping": "x = origin_x + col * cell_size; y = origin_y + row * cell_size",
+                "world_mapping": (
+                    "x = origin_x + (col + 0.5) * tile_size_x_m; "
+                    "y = origin_y + (y_index + 0.5) * tile_size_y_m; "
+                    "y_index = (n_rows - 1 - row) if flip_y else row"
+                ),
             },
         },
         "next_step": "Use own_grid_array for direct editable matrix input; keep file path only as optional fallback.",
     }
+
+
+def _bool_from_any(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    token = str(value).strip().lower()
+    if token in {"1", "true", "yes", "y", "on"}:
+        return True
+    if token in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _safe_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _resolve_own_data_dir(own_data_dir, own_dataset_key=None):
+    token = str(own_dataset_key or "").strip()
+    if token:
+        return Path(get_own_dataset_spec(token)["dataset_dir"])
+    return Path(own_data_dir)
+
+
+def _tile_matrix_to_point_cloud(matrix, meta):
+    matrix = np.asarray(matrix, dtype=float)
+    if matrix.ndim != 2 or matrix.size == 0:
+        raise ValueError("Tile matrix input must be a non-empty 2D array.")
+
+    rows, cols = matrix.shape
+    origin = meta.get("origin_xy_m", [0.0, 0.0]) if isinstance(meta, dict) else [0.0, 0.0]
+    origin_x = _safe_float(origin[0] if len(origin) > 0 else 0.0, 0.0)
+    origin_y = _safe_float(origin[1] if len(origin) > 1 else 0.0, 0.0)
+    tile_size_x_m = _safe_float(
+        meta.get("tile_size_x_m", meta.get("cell_size_m", 0.96)) if isinstance(meta, dict) else 0.96,
+        0.96,
+    )
+    tile_size_y_m = _safe_float(
+        meta.get("tile_size_y_m", meta.get("cell_size_m", 1.10)) if isinstance(meta, dict) else 1.10,
+        1.10,
+    )
+    anchor = str(meta.get("anchor", "center") if isinstance(meta, dict) else "center").strip().lower()
+    if anchor not in {"center", "corner"}:
+        anchor = "center"
+    flip_y = _bool_from_any(meta.get("flip_y", True) if isinstance(meta, dict) else True, default=True)
+
+    col_idx = np.tile(np.arange(cols, dtype=float), rows)
+    row_idx = np.repeat(np.arange(rows, dtype=float), cols)
+    y_idx = (rows - 1.0 - row_idx) if flip_y else row_idx
+    offset_x = 0.5 * tile_size_x_m if anchor == "center" else 0.0
+    offset_y = 0.5 * tile_size_y_m if anchor == "center" else 0.0
+
+    z = matrix.reshape(-1)
+    valid = np.isfinite(z)
+    if not np.any(valid):
+        raise ValueError("Tile matrix has no finite values.")
+
+    x = origin_x + col_idx * tile_size_x_m + offset_x
+    y = origin_y + y_idx * tile_size_y_m + offset_y
+    points = np.column_stack([x[valid], y[valid], z[valid]])
+    normalized_meta = {
+        "origin_xy_m": [float(origin_x), float(origin_y)],
+        "tile_size_x_m": float(tile_size_x_m),
+        "tile_size_y_m": float(tile_size_y_m),
+        "anchor": anchor,
+        "flip_y": bool(flip_y),
+        "tile_count_x": int(cols),
+        "tile_count_y": int(rows),
+        "cell_size_m": float(tile_size_x_m),
+    }
+    return points, normalized_meta
+
+
+def _calc_auto_bounds_for_tile_matrix(meta):
+    origin = meta.get("origin_xy_m", [0.0, 0.0])
+    origin_x = _safe_float(origin[0] if len(origin) > 0 else 0.0, 0.0)
+    origin_y = _safe_float(origin[1] if len(origin) > 1 else 0.0, 0.0)
+    tile_size_x_m = _safe_float(meta.get("tile_size_x_m", 0.96), 0.96)
+    tile_size_y_m = _safe_float(meta.get("tile_size_y_m", 1.10), 1.10)
+    tile_count_x = int(meta.get("tile_count_x", 0))
+    tile_count_y = int(meta.get("tile_count_y", 0))
+    return (
+        float(origin_x),
+        float(origin_x + tile_count_x * tile_size_x_m),
+        float(origin_y),
+        float(origin_y + tile_count_y * tile_size_y_m),
+    )
 
 
 # ============================================================
@@ -488,22 +598,6 @@ def _api_get_map(
         map_info["extract_dir"] = str(extract_dir)
         return map_info
 
-    # if source == "own":
-    #     raw_map =  _build_own_map_interface(
-    #         own_grid_array=own_grid_array,
-    #         own_grid_map_path=own_grid_map_path,
-    #         own_grid_format=own_grid_format,
-    #         own_grid_meta=own_grid_meta,
-    #     )
-    #     data = own_grid_array
-    #     gridx = np.arange(own_grid_meta["x_min"], own_grid_meta["x_max"], 0.01)
-    #     gridy = np.arange(own_grid_meta["y_min"], own_grid_meta["y_max"], 0.01)
-    #     cov_model = Gaussian(dim=2, len_scale=1, anis=.2, angles=-.5, var=.5, nugget=.1)
-    #     OK1 = OrdinaryKriging(data[:, 0], data[:, 1], data[:, 2], cov_model)
-    #     z1, ss1 = OK1.execute('grid', gridx, gridy)
-    #     return {"map":z1 , "rangex_min": own_grid_meta["x_min"], "rangex_max": own_grid_meta["x_max"], "rangey_min": own_grid_meta["y_min"], "rangey_max":own_grid_meta["y_max"]}
-    #
-    # raise ValueError(f"Unsupported map source: {source}")
     if source == "own":
         raw_map = _build_own_map_interface(
             own_grid_array=own_grid_array,
@@ -511,36 +605,77 @@ def _api_get_map(
             own_grid_format=own_grid_format,
             own_grid_meta=own_grid_meta,
         )
+        merged_meta = dict(raw_map.get("grid_map_contract", {}).get("meta", {}))
 
-        data = np.asarray(own_grid_array, dtype=float)  # data.shape = (N, 3)
+        if own_grid_array is None:
+            raise ValueError("`own_grid_array` is required for source='own'.")
+        arr = np.asarray(own_grid_array, dtype=float)
+        if arr.ndim != 2 or arr.size == 0:
+            raise ValueError("`own_grid_array` must be a non-empty 2D array.")
 
+        force_tile_matrix = _bool_from_any(merged_meta.get("force_tile_matrix", False), default=False)
+        point_cloud_mode = "point_cloud" if (arr.shape[1] == 3 and not force_tile_matrix) else "tile_matrix"
+        if point_cloud_mode == "point_cloud":
+            points = arr
+            matrix_grid = None
+            raw_map["grid_array"] = None
+        else:
+            points, derived_meta = _tile_matrix_to_point_cloud(arr, merged_meta)
+            merged_meta.update(derived_meta)
+            matrix_grid = np.asarray(arr, dtype=float)
+            raw_map["grid_array"] = matrix_grid.tolist()
 
-        gridx = np.arange(own_grid_meta["x_min"], own_grid_meta["x_max"] + 0.02, 0.02)
-        gridy = np.arange(own_grid_meta["y_min"], own_grid_meta["y_max"] + 0.02, 0.02)
+        finite_mask = np.isfinite(points).all(axis=1)
+        points = np.asarray(points[finite_mask], dtype=float)
+        if points.ndim != 2 or points.shape[1] != 3 or points.shape[0] == 0:
+            raise ValueError("Failed to build valid own-map point cloud.")
 
+        if point_cloud_mode == "tile_matrix":
+            rangex_min, rangex_max, rangey_min, rangey_max = _calc_auto_bounds_for_tile_matrix(merged_meta)
+            z1 = np.asarray(matrix_grid, dtype=float)
+        else:
+            x_min_default = float(np.min(points[:, 0]))
+            x_max_default = float(np.max(points[:, 0]))
+            y_min_default = float(np.min(points[:, 1]))
+            y_max_default = float(np.max(points[:, 1]))
+            rangex_min = _safe_float(merged_meta.get("x_min", x_min_default), x_min_default)
+            rangex_max = _safe_float(merged_meta.get("x_max", x_max_default), x_max_default)
+            rangey_min = _safe_float(merged_meta.get("y_min", y_min_default), y_min_default)
+            rangey_max = _safe_float(merged_meta.get("y_max", y_max_default), y_max_default)
+            if rangex_max <= rangex_min or rangey_max <= rangey_min:
+                raise ValueError("Invalid own-map bounds; ensure x_max>x_min and y_max>y_min.")
 
-        field_var = np.var(data[:, 2])
+            grid_step = _safe_float(merged_meta.get("grid_step_m", 0.02), 0.02)
+            grid_step = max(grid_step, 0.001)
+            gridx = np.arange(rangex_min, rangex_max + grid_step, grid_step)
+            gridy = np.arange(rangey_min, rangey_max + grid_step, grid_step)
 
+            field_var = max(float(np.var(points[:, 2])), 1e-8)
+            cov_model = Gaussian(
+                dim=2,
+                len_scale=1.2,
+                anis=0.25 / 1.2,
+                angles=0.0,
+                var=field_var,
+                nugget=0.02 * field_var,
+            )
+            ok = OrdinaryKriging(points[:, 0], points[:, 1], points[:, 2], cov_model)
+            z1, _ = ok.execute("grid", gridx, gridy)
+            z1 = np.asarray(z1, dtype=float)
 
-        cov_model = Gaussian(
-            dim=2,
-            len_scale=1.2,
-            anis=0.25 / 1.2,
-            angles=0.0,
-            var=field_var,
-            nugget=0.02 * field_var
-        )
+        raw_map["status"] = "ready"
+        raw_map["point_cloud_mode"] = point_cloud_mode
+        raw_map["point_cloud_shape"] = [int(points.shape[0]), 3]
+        raw_map["map_points"] = points.tolist()
+        raw_map["grid_map_contract"]["meta"] = merged_meta
+        raw_map["map"] = z1.tolist() if isinstance(z1, np.ndarray) else z1
+        raw_map["rangex_min"] = float(rangex_min)
+        raw_map["rangex_max"] = float(rangex_max)
+        raw_map["rangey_min"] = float(rangey_min)
+        raw_map["rangey_max"] = float(rangey_max)
+        return raw_map
 
-        OK1 = OrdinaryKriging(data[:, 0], data[:, 1], data[:, 2], cov_model)
-        z1, ss1 = OK1.execute("grid", gridx, gridy)
-
-        return {
-            "map": z1,
-            "rangex_min": own_grid_meta["x_min"],
-            "rangex_max": own_grid_meta["x_max"],
-            "rangey_min": own_grid_meta["y_min"],
-            "rangey_max": own_grid_meta["y_max"],
-        }
+    raise ValueError(f"Unsupported map source: {source}")
 
 
 # --- Public API placeholders used by Experiment.run() ---
@@ -723,21 +858,33 @@ def _load_own_sensor_frames(own_data_dir):
         z_candidates=["Z (rad/s)", "Z", "gz"],
     )
 
-    acc_x_i = np.interp(mag_t, acc_t, acc_x)
-    acc_y_i = np.interp(mag_t, acc_t, acc_y)
-    acc_z_i = np.interp(mag_t, acc_t, acc_z)
-    gyr_x_i = np.interp(mag_t, gyr_t, gyr_x)
-    gyr_y_i = np.interp(mag_t, gyr_t, gyr_y)
-    gyr_z_i = np.interp(mag_t, gyr_t, gyr_z)
+    # Own-data PDR is acceleration-driven, so keep the accelerometer time axis
+    # and align magnetometer/gyroscope samples to it.
+    base_t = acc_t
+    acc_arr = np.column_stack((acc_x, acc_y, acc_z))
+    gyr_arr = np.column_stack(
+        (
+            np.interp(base_t, gyr_t, gyr_x),
+            np.interp(base_t, gyr_t, gyr_y),
+            np.interp(base_t, gyr_t, gyr_z),
+        )
+    )
+    mag_arr = np.column_stack(
+        (
+            np.interp(base_t, mag_t, mag_x),
+            np.interp(base_t, mag_t, mag_y),
+            np.interp(base_t, mag_t, mag_z),
+        )
+    )
 
     frames = []
-    for i in range(mag_t.size):
+    for i in range(base_t.size):
         frames.append(
             {
-                "time": float(mag_t[i]),
-                "mag": [float(mag_x[i]), float(mag_y[i]), float(mag_z[i])],
-                "acc": [float(acc_x_i[i]), float(acc_y_i[i]), float(acc_z_i[i])],
-                "gyro": [float(gyr_x_i[i]), float(gyr_y_i[i]), float(gyr_z_i[i])],
+                "time": float(base_t[i]),
+                "mag": [float(mag_arr[i, 0]), float(mag_arr[i, 1]), float(mag_arr[i, 2])],
+                "acc": [float(acc_arr[i, 0]), float(acc_arr[i, 1]), float(acc_arr[i, 2])],
+                "gyro": [float(gyr_arr[i, 0]), float(gyr_arr[i, 1]), float(gyr_arr[i, 2])],
                 "gyro_mode": "angular_rate_rad_s",
                 "source": "own",
             }
@@ -747,12 +894,31 @@ def _load_own_sensor_frames(own_data_dir):
     return frames
 
 
-def _sensor_stream_key(source, data_root, uji_test_file, own_data_dir):
-    return (source, str(Path(data_root)), str(uji_test_file), str(Path(own_data_dir)))
+def _sensor_stream_key(source, data_root, uji_test_file, own_data_dir, own_dataset_key=None):
+    key_token = str(own_dataset_key or "").strip()
+    return (source, str(Path(data_root)), str(uji_test_file), str(Path(own_data_dir)), key_token)
 
 
-def _ensure_sensor_stream(source, data_root, uji_test_file, own_data_dir, reset=False):
-    key = _sensor_stream_key(source, data_root, uji_test_file, own_data_dir)
+def _ensure_sensor_stream(
+    source,
+    data_root,
+    uji_test_file,
+    own_data_dir,
+    own_dataset_key=None,
+    reset=False,
+):
+    resolved_own_data_dir = (
+        _resolve_own_data_dir(own_data_dir, own_dataset_key=own_dataset_key)
+        if source == "own"
+        else Path(own_data_dir)
+    )
+    key = _sensor_stream_key(
+        source,
+        data_root,
+        uji_test_file,
+        own_data_dir=resolved_own_data_dir,
+        own_dataset_key=own_dataset_key,
+    )
     if reset or _SENSOR_STATE["frames"] is None or _SENSOR_STATE["key"] != key:
         if source == "uji":
             base = (
@@ -768,7 +934,7 @@ def _ensure_sensor_stream(source, data_root, uji_test_file, own_data_dir, reset=
                 test_path = base / uji_test_file
             frames = _load_uji_sensor_frames(test_path)
         elif source == "own":
-            frames = _load_own_sensor_frames(own_data_dir)
+            frames = _load_own_sensor_frames(resolved_own_data_dir)
         else:
             raise ValueError(f"Unsupported sensor source: {source}")
 
@@ -776,6 +942,13 @@ def _ensure_sensor_stream(source, data_root, uji_test_file, own_data_dir, reset=
         _SENSOR_STATE["key"] = key
         _SENSOR_STATE["frames"] = frames
         _SENSOR_STATE["index"] = 0
+        if len(frames) > 1:
+            times = np.asarray([float(f["time"]) for f in frames[: min(100, len(frames))]], dtype=float)
+            diffs = np.diff(times)
+            dt_est = float(np.mean(diffs)) if diffs.size else 0.02
+            _SENSOR_STATE["dt"] = dt_est if 0.001 < dt_est < 0.5 else 0.02
+        else:
+            _SENSOR_STATE["dt"] = 0.02
     return _SENSOR_STATE["frames"]
 
 
@@ -786,6 +959,8 @@ def _api_get_true_route(
     uji_test_file="tt01.txt",
     own_location_csv=None,
     own_data_dir="data/Geomagnetic Navigation 2026-03-03 15-28-45",
+    own_dataset_key=None,
+    own_route_xy_m=None,
 ):
     source = source.lower()
 
@@ -797,8 +972,19 @@ def _api_get_true_route(
         return _parse_uji_true_route_file(test_path)
 
     if source == "own":
+        if own_route_xy_m is not None:
+            arr = np.asarray(own_route_xy_m, dtype=float)
+            if arr.ndim != 2 or arr.shape[1] < 2 or arr.shape[0] == 0:
+                raise ValueError("`own_route_xy_m` must be a non-empty sequence of [x, y] points.")
+            return [[float(x), float(y)] for x, y in arr[:, :2]]
+
+        token = str(own_dataset_key or "").strip()
+        if token:
+            return get_own_route_xy_m(token)
+
+        resolved_own_data_dir = _resolve_own_data_dir(own_data_dir, own_dataset_key=None)
         if own_location_csv is None:
-            csv_path = Path(own_data_dir) / "Location.csv"
+            csv_path = resolved_own_data_dir / "Location.csv"
         else:
             csv_path = Path(own_location_csv)
         if not csv_path.exists():
@@ -844,6 +1030,7 @@ def _api_get_test_len(
     data_root="data/raw",
     uji_test_file="tt01.txt",
     own_data_dir="data/Geomagnetic Navigation 2026-03-03 15-28-45",
+    own_dataset_key=None,
 ):
     source = source.lower()
     frames = _ensure_sensor_stream(
@@ -851,9 +1038,11 @@ def _api_get_test_len(
         data_root=data_root,
         uji_test_file=uji_test_file,
         own_data_dir=own_data_dir,
+        own_dataset_key=own_dataset_key,
         reset=True,
     )
     _ALGO_STATE["heading_rad"] = 0.0
+    _ALGO_STATE["is_heading_initialized"] = False
     _ALGO_STATE["heading_debug"] = {}
     return len(frames)
 
@@ -864,6 +1053,7 @@ def _api_get_sensor(
     data_root="data/raw",
     uji_test_file="tt01.txt",
     own_data_dir="data/Geomagnetic Navigation 2026-03-03 15-28-45",
+    own_dataset_key=None,
 ):
     source = source.lower()
     frames = _ensure_sensor_stream(
@@ -871,6 +1061,7 @@ def _api_get_sensor(
         data_root=data_root,
         uji_test_file=uji_test_file,
         own_data_dir=own_data_dir,
+        own_dataset_key=own_dataset_key,
         reset=False,
     )
     idx = _SENSOR_STATE["index"]
@@ -1082,7 +1273,21 @@ def _azimuth_deg_to_xy_heading_rad(az_deg):
     return _wrap_angle_pi(math.radians(90.0 - float(az_deg)))
 
 
-def _api_get_heading_angle(samples, method="gyro", dt=0.02, alpha=None):
+def _azimuth_rad_to_map_heading_rad(az_rad, source="uji"):
+    if str(source).lower() == "own":
+        # Own map convention from the previous branch: +X points south, +Y points east.
+        return _wrap_angle_pi(math.pi - float(az_rad))
+    return _wrap_angle_pi((math.pi * 0.5) - float(az_rad))
+
+
+def _api_get_heading_angle(
+    samples,
+    method="gyro",
+    dt=0.02,
+    alpha=None,
+    initial_heading_rad=None,
+    heading_offset_deg=None,
+):
     if samples is None or len(samples) == 0:
         return float(_ALGO_STATE["heading_rad"])
 
@@ -1110,7 +1315,8 @@ def _api_get_heading_angle(samples, method="gyro", dt=0.02, alpha=None):
     gyro_abs_med = float(np.median(np.abs(gyro_arr), axis=0).max()) if gyro_arr.size else 0.0
 
     method = str(method).lower()
-    heading_offset_rad = math.radians(float(_STEP_CONFIG.get("heading_offset_deg", 0.0)))
+    offset_deg = _STEP_CONFIG.get("heading_offset_deg", 0.0) if heading_offset_deg is None else heading_offset_deg
+    heading_offset_rad = math.radians(float(offset_deg))
     azimuth_mode = bool(_STEP_CONFIG.get("orientation_as_azimuth_deg", True))
 
     # If no explicit mode provided, infer from data scale.
@@ -1120,19 +1326,44 @@ def _api_get_heading_angle(samples, method="gyro", dt=0.02, alpha=None):
         else:
             gyro_mode = "angular_rate_rad_s"
 
+    raw_compass_rad = _heading_from_acc_mag(acc_arr.mean(axis=0), mag_arr.mean(axis=0))
+    compass_map_rad = (
+        _azimuth_rad_to_map_heading_rad(raw_compass_rad, source=sensor_source)
+        if sensor_source == "own"
+        else raw_compass_rad
+    )
+
+    offset_baked_into_heading = False
+    if gyro_mode == "angular_rate_rad_s" and not _ALGO_STATE.get("is_heading_initialized", False):
+        if initial_heading_rad is not None:
+            init_heading = float(initial_heading_rad)
+            init_offset = 0.0
+        elif sensor_source == "own":
+            init_heading = compass_map_rad
+            init_offset = heading_offset_rad
+        else:
+            init_heading = float(_ALGO_STATE.get("heading_rad", 0.0))
+            init_offset = heading_offset_rad
+        _ALGO_STATE["heading_rad"] = _wrap_angle_pi(init_heading + init_offset)
+        _ALGO_STATE["is_heading_initialized"] = True
+        offset_baked_into_heading = bool(abs(init_offset) > 0.0)
+
     def gyro_heading_estimate():
         if gyro_mode == "orientation_deg":
             # UJI test files commonly provide orientation angles in degrees.
             # Use the first channel (azimuth-like) as absolute heading.
             heading_deg = float(np.mean(gyro_arr[:, 0]))
             if azimuth_mode:
+                if sensor_source == "own":
+                    return _azimuth_rad_to_map_heading_rad(math.radians(heading_deg), source=sensor_source)
                 return _azimuth_deg_to_xy_heading_rad(heading_deg)
             return _wrap_angle_pi(math.radians(heading_deg))
         # Standard gyro angular-rate integration (z-yaw).
-        return _wrap_angle_pi(float(_ALGO_STATE["heading_rad"] + np.mean(gyro_arr[:, 2]) * float(dt) * len(gyro_arr)))
+        dt_used = float(_SENSOR_STATE.get("dt", 0.02) if dt is None else dt)
+        return _wrap_angle_pi(float(_ALGO_STATE["heading_rad"] + np.mean(gyro_arr[:, 2]) * dt_used * len(gyro_arr)))
 
     yaw_gyro = gyro_heading_estimate()
-    yaw_compass = _heading_from_acc_mag(acc_arr.mean(axis=0), mag_arr.mean(axis=0))
+    yaw_compass = _wrap_angle_pi(compass_map_rad + heading_offset_rad) if sensor_source == "own" else compass_map_rad
     alpha_used = None
 
     if method == "gyro":
@@ -1150,15 +1381,21 @@ def _api_get_heading_angle(samples, method="gyro", dt=0.02, alpha=None):
     else:
         raise ValueError("Unsupported heading method. Supported: ['gyro', 'tilt_compass', 'q_fused']")
 
-    yaw = _wrap_angle_pi(float(yaw + heading_offset_rad))
+    if not (sensor_source == "own" and gyro_mode == "angular_rate_rad_s"):
+        yaw = _wrap_angle_pi(float(yaw + heading_offset_rad))
+    else:
+        yaw = _wrap_angle_pi(float(yaw))
     _ALGO_STATE["heading_rad"] = float(yaw)
+    _ALGO_STATE["is_heading_initialized"] = True
     _ALGO_STATE["heading_debug"] = {
         "method": method,
         "sensor_source": sensor_source,
         "gyro_mode": gyro_mode,
         "gyro_abs_median": gyro_abs_med,
-        "heading_offset_deg": float(_STEP_CONFIG.get("heading_offset_deg", 0.0)),
+        "heading_offset_deg": float(offset_deg),
         "alpha_used": alpha_used,
+        "initial_heading_rad": None if initial_heading_rad is None else float(initial_heading_rad),
+        "offset_baked_into_heading": bool(offset_baked_into_heading),
         "yaw_gyro_deg": float(math.degrees(yaw_gyro)),
         "yaw_compass_deg": float(math.degrees(yaw_compass)),
         "heading_rad": float(yaw),
@@ -1250,16 +1487,24 @@ def _api_PF(step_len, heading_angle, geomag_list, pf_state):
         # No map available: return dead-reckoning-like estimate.
         return pf_state.get_pos()
 
-    raw_weights = []
     for p in pf_state.particles:
+        if not getattr(p, "alive", True):
+            p.weight = 0.0
+            continue
         theta = _wrap_angle_pi(heading_angle + float(rng.normal(0.0, 0.12)))
         dist = max(0.0, step_len + float(rng.normal(0.0, 0.22)))
         p.theta = theta
         nx = float(p.x + dist * math.cos(theta))
         ny = float(p.y + dist * math.sin(theta))
-        p.x, p.y = pf_state.clamp_to_map(nx, ny)
+        if not pf_state.in_strict_map_bounds(nx, ny):
+            pf_state.kill_particle(p)
+            continue
+        p.x, p.y = nx, ny
 
         pred_mag = float(pf_state.map_magnitude(p.x, p.y))
+        if not math.isfinite(pred_mag):
+            pf_state.kill_particle(p)
+            continue
         p.mag_hist.append(pred_mag)
         hist_len = int(max(1, min(len(obs), 100)))
         pred_seq = np.asarray(p.mag_hist[-hist_len:], dtype=float)
@@ -1268,16 +1513,8 @@ def _api_PF(step_len, heading_angle, geomag_list, pf_state):
         w_ddtw = math.exp(-((d * d) / (2.0 * sigma * sigma + 1e-12)))
         w = float(max(1e-12, w_ddtw))
         p.weight = w
-        raw_weights.append(w)
 
-    total_weight = float(sum(raw_weights))
-    if total_weight <= 1e-12:
-        uniform_weight = 1.0 / max(len(pf_state.particles), 1)
-        for p in pf_state.particles:
-            p.weight = uniform_weight
-    else:
-        for p in pf_state.particles:
-            p.weight = float(max(p.weight, 0.0) / total_weight)
+    pf_state._normalize_weights()
 
     # KLD adaptive particle count.
     target_n = pf_state.adapt_particle_count_kld()
@@ -1760,15 +1997,25 @@ def _api_visualize(
             raise ValueError("`grid_array` must be a non-empty 2D matrix.")
 
         meta_map = geomag_map.get("grid_map_contract", {}).get("meta", {})
-        cell_size = float(meta_map.get("cell_size_m", 1.0) or 1.0)
+        tile_size_x_m = _safe_float(meta_map.get("tile_size_x_m", meta_map.get("cell_size_m", 1.0)), 1.0)
+        tile_size_y_m = _safe_float(meta_map.get("tile_size_y_m", meta_map.get("cell_size_m", 1.0)), 1.0)
         origin = meta_map.get("origin_xy_m", [0.0, 0.0])
         origin_x = float(origin[0]) if len(origin) > 0 else 0.0
         origin_y = float(origin[1]) if len(origin) > 1 else 0.0
+        anchor = str(meta_map.get("anchor", "center")).strip().lower()
+        if anchor not in {"center", "corner"}:
+            anchor = "center"
+        flip_y = _bool_from_any(meta_map.get("flip_y", True), default=True)
         variogram_model = str(meta_map.get("variogram_model", "spherical"))
 
         rows, cols = z.shape
-        col_coords = origin_x + np.arange(cols, dtype=float) * cell_size
-        row_coords = origin_y + np.arange(rows, dtype=float) * cell_size
+        col_idx = np.arange(cols, dtype=float)
+        row_idx = np.arange(rows, dtype=float)
+        y_idx = (rows - 1.0 - row_idx) if flip_y else row_idx
+        x_offset = 0.5 * tile_size_x_m if anchor == "center" else 0.0
+        y_offset = 0.5 * tile_size_y_m if anchor == "center" else 0.0
+        col_coords = origin_x + col_idx * tile_size_x_m + x_offset
+        row_coords = origin_y + y_idx * tile_size_y_m + y_offset
         xx_train, yy_train = np.meshgrid(col_coords, row_coords)
         valid = np.isfinite(z)
         x_train = xx_train[valid]
@@ -1777,10 +2024,10 @@ def _api_visualize(
         if x_train.size < 4:
             raise ValueError("Need at least 4 valid matrix cells for Kriging-based continuous usermap.")
 
-        min_x = float(col_coords[0])
-        max_x = float(col_coords[-1])
-        min_y = float(row_coords[0])
-        max_y = float(row_coords[-1])
+        min_x = float(origin_x)
+        max_x = float(origin_x + cols * tile_size_x_m)
+        min_y = float(origin_y)
+        max_y = float(origin_y + rows * tile_size_y_m)
         grid_x = np.arange(min_x, max_x + vis_resolution, vis_resolution, dtype=float)
         grid_y = np.arange(min_y, max_y + vis_resolution, vis_resolution, dtype=float)
         ok = _fit_ordinary_kriging(

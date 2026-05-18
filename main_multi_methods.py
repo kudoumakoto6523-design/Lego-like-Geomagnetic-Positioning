@@ -400,6 +400,7 @@ def run_comparison(
     output_png="results/multi_method_comparison_tt02.png",
 ):
     context = build_main_context()
+    own_dataset_key = getattr(context, "own_dataset_key", None)
     pdr_config, pf_config = build_main_configs()
     pdr_module = build_pdr_from_config(pdr_config)
     pf_module = build_pf_from_config(pf_config)
@@ -419,6 +420,7 @@ def run_comparison(
         data_root=context.data_root,
         uji_test_file=context.uji_test_file,
         own_data_dir=context.own_data_dir,
+        own_dataset_key=own_dataset_key,
     )
     if not route:
         raise ValueError("True route is empty. Cannot run comparison.")
@@ -468,6 +470,7 @@ def run_comparison(
         data_root=context.data_root,
         uji_test_file=context.uji_test_file,
         own_data_dir=context.own_data_dir,
+        own_dataset_key=own_dataset_key,
     )
     if max_frames is not None:
         test_len = min(int(max_frames), int(test_len))
@@ -487,6 +490,7 @@ def run_comparison(
             data_root=context.data_root,
             uji_test_file=context.uji_test_file,
             own_data_dir=context.own_data_dir,
+            own_dataset_key=own_dataset_key,
         )
         sample_buffer.append([acc, gyro, mag])
 
@@ -591,6 +595,7 @@ def run_comparison(
             "route_source": context.route_source,
             "sensor_source": context.sensor_source,
             "uji_test_file": context.uji_test_file,
+            "own_dataset_key": own_dataset_key,
         },
         "methods": summaries,
         "tracks": {k: [list(map(float, xy)) for xy in v] for k, v in tracks.items()},

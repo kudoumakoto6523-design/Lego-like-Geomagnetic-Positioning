@@ -7,6 +7,7 @@ Geomag/experiment.py
 Geomag/initiation.py
 Geomag/models.py
 Geomag/nn.py
+Geomag/own_dataset_registry.py
 Geomag/pipeline.py
 Geomag/utils.py
 geomagnetic_positioning_ddtw.egg-info/PKG-INFO

@@ -354,6 +354,9 @@ class GeomagPipeline:
         if arr.ndim != 2 or arr.shape[1] < 2 or arr.shape[0] == 0:
             return None, None
 
+        if isinstance(geomag_map, dict) and geomag_map.get("source") == "own":
+            return np.asarray(arr[:, 0], dtype=float), np.asarray(arr[:, 1], dtype=float)
+
         origin_lat, origin_lon = cls._resolve_origin_latlon(geomag_map)
         if origin_lat is None or origin_lon is None:
             return None, None
@@ -405,11 +408,13 @@ class GeomagPipeline:
 
     def run(self, show=True, output_png=None, max_frames=None):
         geomag_map = self.context.geomag_map
+        own_dataset_key = getattr(self.context, "own_dataset_key", None)
         route = get_true_route(
             source=self.context.route_source,
             data_root=self.context.data_root,
             uji_test_file=self.context.uji_test_file,
             own_data_dir=self.context.own_data_dir,
+            own_dataset_key=own_dataset_key,
         )
         if not route:
             raise ValueError("True route is empty, cannot initialize particle filter.")
@@ -430,6 +435,7 @@ class GeomagPipeline:
             data_root=self.context.data_root,
             uji_test_file=self.context.uji_test_file,
             own_data_dir=self.context.own_data_dir,
+            own_dataset_key=own_dataset_key,
         )
         if max_frames is not None:
             test_len = min(int(max_frames), int(test_len))
@@ -450,6 +456,7 @@ class GeomagPipeline:
                 data_root=self.context.data_root,
                 uji_test_file=self.context.uji_test_file,
                 own_data_dir=self.context.own_data_dir,
+                own_dataset_key=own_dataset_key,
             )
             sample_buffer.append([acc, gyro, mag])
 

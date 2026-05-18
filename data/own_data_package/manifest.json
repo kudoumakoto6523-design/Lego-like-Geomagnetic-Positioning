@@ -1,0 +1,69 @@
+{
+  "format_version": "1.0",
+  "map": {
+    "tile_count_x": 12,
+    "tile_count_y": 8,
+    "tile_size_x_cm": 96,
+    "tile_size_y_cm": 110,
+    "tile_size_x_m": 0.96,
+    "tile_size_y_m": 1.1,
+    "coordinate_interpretation": "tile_based",
+    "recommended_anchor": "center",
+    "recommended_flip_y": true
+  },
+  "datasets": {
+    "route1_run1": {
+      "route_label": "route1",
+      "source_zip": "Geomagnetic Navigation 2026-03-12 21-12-10.zip",
+      "assignment_confidence": "medium"
+    },
+    "route2_run1": {
+      "route_label": "route2",
+      "source_zip": "Geomagnetic Navigation 2026-03-19 20-03-26.zip",
+      "assignment_confidence": "high"
+    },
+    "route1_run2": {
+      "route_label": "route1",
+      "source_zip": "Geomagnetic Navigation 2026-03-19 20-04-39.zip",
+      "assignment_confidence": "high"
+    }
+  },
+  "routes": {
+    "route1_tile_vertices": [
+      [
+        1,
+        0
+      ],
+      [
+        1,
+        7
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        0
+      ],
+      [
+        1,
+        0
+      ]
+    ],
+    "route2_tile_vertices": [
+      [
+        1,
+        0
+      ],
+      [
+        1,
+        5
+      ],
+      [
+        4,
+        5
+      ]
+    ]
+  }
+}

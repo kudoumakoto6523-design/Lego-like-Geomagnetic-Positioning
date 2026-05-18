@@ -202,12 +202,17 @@ class GaussianMotion(MotionBlock):
     def forward(self, pf_state, step_len: float, heading_angle: float):
         rng = getattr(pf_state, "rng", np.random.default_rng(42))
         for p in pf_state.particles:
+            if not getattr(p, "alive", True):
+                continue
             theta = _wrap_angle_pi(float(heading_angle) + float(rng.normal(0.0, self.heading_noise_std)))
             dist = max(0.0, float(step_len) + float(rng.normal(0.0, self.step_noise_std)))
             p.theta = theta
             nx = float(p.x + dist * math.cos(theta))
             ny = float(p.y + dist * math.sin(theta))
-            p.x, p.y = pf_state.clamp_to_map(nx, ny)
+            if not pf_state.in_strict_map_bounds(nx, ny):
+                pf_state.kill_particle(p)
+                continue
+            p.x, p.y = float(nx), float(ny)
 
 
 class DDTWWeight(WeightBlock):
@@ -228,8 +233,14 @@ class DDTWWeight(WeightBlock):
         )
 
         for p in pf_state.particles:
+            if not getattr(p, "alive", True):
+                p.weight = 0.0
+                continue
             prior_weight = float(max(p.weight, 1e-12)) if self.accumulate else 1.0
             pred_mag = float(pf_state.map_magnitude(p.x, p.y))
+            if not math.isfinite(pred_mag):
+                pf_state.kill_particle(p)
+                continue
             p.mag_hist.append(pred_mag)
             hist_len = int(max(1, min(len(obs), self.max_hist)))
             pred_seq = np.asarray(p.mag_hist[-hist_len:], dtype=float)
