@@ -11,7 +11,7 @@ from Geomag.algorithms import get_map, get_sensor, get_test_len, get_true_route
 from Geomag.models import PFState
 from Geomag.own_dataset_registry import get_own_dataset_spec
 from Geomag.pipeline import GeomagPipeline
-from magnetometer_map_own import data as own_map_raw
+from data.own_data.magnetometer_map_own import data as own_map_raw
 
 
 def build_main_configs():

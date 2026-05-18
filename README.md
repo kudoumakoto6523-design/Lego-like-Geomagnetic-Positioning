@@ -3,6 +3,16 @@
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+
+# 运行方式：
+## Mac端：
+```bash
+bash run.sh
+```
+
+## Windows 端：
+
+直接运行 `run.bat`
 # First of All
 This is the package I am using for testing my own geomagnetic positioning project using Particle filter, and I am trying to make the project **more lego-like such as pytorch** , and you can see some of the characteristics are from pytorch, actually. I am going to make this a acedemic-directed tool, 
 everyone who come up with an idea of, whatever the filter problem is, can immediately turn on the mac, quickly have a simulation, and feel free to build anything you like. World of Machine Learning can do it, I hope we will do it. 
@@ -300,9 +310,9 @@ visualize(geomag_map=own_map, mode="usermap")
 
 The visualization API also supports route and sensor overlays, as shown in:
 
-- [`main_get_map_temp.py`](main_get_map_temp.py)
-- [`main_get_true_route.py`](main_get_true_route.py)
-- [`main_get_sensor_and_len.py`](main_get_sensor_and_len.py)
+- [`main_get_map_temp.py`](examples/main_get_map_temp.py)
+- [`main_get_true_route.py`](examples/main_get_true_route.py)
+- [`main_get_sensor_and_len.py`](examples/main_get_sensor_and_len.py)
 
 ## Repository Layout
 

@@ -3,6 +3,7 @@ pyproject.toml
 Geomag/__init__.py
 Geomag/algorithms.py
 Geomag/blocks.py
+Geomag/branching.py
 Geomag/experiment.py
 Geomag/initiation.py
 Geomag/models.py

@@ -245,7 +245,7 @@ def build_own_geomag_map(config: BranchConfig):
             },
         )
 
-    from magnetometer_map_own import data as own_map_raw
+    from data.own_data.magnetometer_map_own import data as own_map_raw
 
     tile_matrix = build_own_tile_matrix(own_map_raw, mode=config.own_map_mode, rows=8, cols=12)
     rows, cols = tile_matrix.shape

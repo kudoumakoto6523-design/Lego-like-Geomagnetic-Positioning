@@ -2,7 +2,7 @@ import numpy as np
 
 from Geomag.algorithms import get_map, get_sensor, get_test_len, get_true_route
 from Geomag.own_dataset_registry import get_own_dataset_spec
-from magnetometer_map_own import data
+from data.own_data.magnetometer_map_own import data
 
 
 def build_demo_tile_matrix(raw_matrix, target_cols=12):
