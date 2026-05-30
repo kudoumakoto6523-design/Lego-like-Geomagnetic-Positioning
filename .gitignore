@@ -28,6 +28,10 @@ Thumbs.db
 # Generated output
 pictures generated/
 results/
+!results/best_final.png
+!results/best_final.json
+!results/full_run.png
+!results/full_run.json
 
 # Data (large files)
 data/raw/
