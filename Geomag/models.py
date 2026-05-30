@@ -1,9 +1,12 @@
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
+import numpy.typing as npt
+
+from Geomag.distance import latlon_to_xy
 
 
 @dataclass
@@ -30,17 +33,19 @@ class Particle:
 
 
 class PFState:
+    """Particle-filter state: particles, map, resampling, and estimation."""
+
     def __init__(
         self,
-        init_pos,
-        mag_map,
-        num_particles=50000,
-        seed=42,
-        weight_sigma=8.0,
-        map_knn_k=10,
-        min_particles=1000,
-        max_particles=100000000,
-    ):
+        init_pos: Any,
+        mag_map: Any,
+        num_particles: int = 50000,
+        seed: int = 42,
+        weight_sigma: float = 8.0,
+        map_knn_k: int = 10,
+        min_particles: int = 1000,
+        max_particles: int = 100000000,
+    ) -> None:
         self.mag_map = mag_map
         self.rng = np.random.default_rng(seed)
         self.weight_sigma = float(weight_sigma)
@@ -56,7 +61,7 @@ class PFState:
         self._normalize_weights()
         self.estimate = self._estimate_xy()
 
-    def _normalize_init_pos(self, init_pos, mag_map):
+    def _normalize_init_pos(self, init_pos, mag_map) -> tuple[float, float]:
         arr = np.asarray(init_pos, dtype=float).reshape(-1)
         if arr.size < 2:
             return 0.0, 0.0
@@ -71,22 +76,13 @@ class PFState:
                     if "origin_lat" in model and "origin_lon" in model and abs(a) <= 90 and abs(b) <= 180:
                         lat0 = float(model["origin_lat"][0])
                         lon0 = float(model["origin_lon"][0])
-                        return self._latlon_to_xy(a, b, lat0, lon0)
+                        return latlon_to_xy(a, b, lat0, lon0)
         except Exception:
             pass
 
         return a, b
 
-    @staticmethod
-    def _latlon_to_xy(lat, lon, lat0, lon0):
-        radius = 6378137.0
-        dlat = math.radians(lat - lat0)
-        dlon = math.radians(lon - lon0)
-        x = radius * dlon * math.cos(math.radians((lat + lat0) * 0.5))
-        y = radius * dlat
-        return float(x), float(y)
-
-    def _load_map_points(self, mag_map):
+    def _load_map_points(self, mag_map) -> Optional[dict[str, npt.NDArray[np.float64]]]:
         if not isinstance(mag_map, dict):
             return None
 
@@ -145,7 +141,7 @@ class PFState:
 
         return None
 
-    def _spawn_particles(self, n, center=None):
+    def _spawn_particles(self, n: int, center=None) -> list[Particle]:
         if center is None:
             cx, cy = self.x0, self.y0
         else:
@@ -210,25 +206,25 @@ class PFState:
             float(np.max(y) + pad),
         )
 
-    def clamp_to_map(self, x, y):
+    def clamp_to_map(self, x: float, y: float) -> tuple[float, float]:
         if self.map_bounds is None:
             return float(x), float(y)
         min_x, max_x, min_y, max_y = self.map_bounds
         return float(np.clip(x, min_x, max_x)), float(np.clip(y, min_y, max_y))
 
-    def clamp_to_strict_map(self, x, y):
+    def clamp_to_strict_map(self, x: float, y: float) -> tuple[float, float]:
         if self.strict_map_bounds is None:
             return float(x), float(y)
         min_x, max_x, min_y, max_y = self.strict_map_bounds
         return float(np.clip(x, min_x, max_x)), float(np.clip(y, min_y, max_y))
 
-    def in_strict_map_bounds(self, x, y):
+    def in_strict_map_bounds(self, x: float, y: float) -> bool:
         if self.strict_map_bounds is None:
             return True
         min_x, max_x, min_y, max_y = self.strict_map_bounds
         return bool(min_x <= float(x) <= max_x and min_y <= float(y) <= max_y)
 
-    def _random_in_strict_map(self):
+    def _random_in_strict_map(self) -> tuple[float, float]:
         if self.strict_map_bounds is None:
             return self.x0, self.y0
         min_x, max_x, min_y, max_y = self.strict_map_bounds
@@ -238,29 +234,42 @@ class PFState:
         )
 
     @staticmethod
-    def kill_particle(p):
+    def kill_particle(p: Particle) -> None:
         p.alive = False
         p.weight = 0.0
 
-    def _normalize_weights(self):
+    def _normalize_weights(self) -> None:
         live = [p for p in self.particles if getattr(p, "alive", True)]
         total = float(sum(max(p.weight, 0.0) for p in live))
         if total <= 1e-12:
-            n = int(np.clip(len(self.particles) or self.min_particles, self.min_particles, self.max_particles))
-            center = getattr(self, "estimate", (self.x0, self.y0))
-            self.particles = self._spawn_particles(n, center=center)
-            w = 1.0 / max(len(self.particles), 1)
-            for p in self.particles:
-                p.alive = True
-                p.weight = w
-            return
+            # Soft recovery: inject tiny weights before hard respawn so
+            # particles that were killed by a single bad match can recover.
+            n_live = len(live)
+            n_total = len(self.particles)
+            if n_total > 0 and n_live == 0:
+                # All dead — give every particle a uniform tiny weight
+                # and re-check on next cycle.
+                tiny = 1.0 / float(n_total)
+                for p in self.particles:
+                    p.alive = True
+                    p.weight = tiny
+                total = 1.0
+            else:
+                n = int(np.clip(n_total or self.min_particles, self.min_particles, self.max_particles))
+                center = getattr(self, "estimate", (self.x0, self.y0))
+                self.particles = self._spawn_particles(n, center=center)
+                w = 1.0 / max(len(self.particles), 1)
+                for p in self.particles:
+                    p.alive = True
+                    p.weight = w
+                return
         for p in self.particles:
             if getattr(p, "alive", True):
                 p.weight = max(p.weight, 0.0) / total
             else:
                 p.weight = 0.0
 
-    def _estimate_xy(self):
+    def _estimate_xy(self) -> tuple[float, float]:
         if not self.particles:
             return (0.0, 0.0)
         self._normalize_weights()
@@ -270,11 +279,11 @@ class PFState:
         ws = np.asarray([p.weight for p in live], dtype=float)
         return float(np.sum(xs * ws)), float(np.sum(ys * ws))
 
-    def get_pos(self):
+    def get_pos(self) -> tuple[float, float]:
         self.estimate = self._estimate_xy()
         return self.estimate
 
-    def effective_sample_size(self):
+    def effective_sample_size(self) -> float:
         if not self.particles:
             return 0.0
         ws = np.asarray([p.weight for p in self.particles], dtype=float)
@@ -283,7 +292,7 @@ class PFState:
             return 0.0
         return float(1.0 / denom)
 
-    def map_magnitude(self, x, y, k=None):
+    def map_magnitude(self, x: float, y: float, k: Optional[int] = None) -> float:
         if self.map_points is None:
             return 0.0
         if not self.in_strict_map_bounds(x, y):
@@ -303,7 +312,7 @@ class PFState:
         w = 1.0 / d
         return float(np.sum(w * pz[idx]) / np.sum(w))
 
-    def adapt_particle_count_kld(self, epsilon=0.12, z=1.96, bin_size_xy=0.8, bin_size_theta=0.35):
+    def adapt_particle_count_kld(self, epsilon: float = 0.12, z: float = 1.96, bin_size_xy: float = 0.8, bin_size_theta: float = 0.35) -> int:
         if not self.particles:
             return self.min_particles
         bins = set()
@@ -322,7 +331,64 @@ class PFState:
         n = int(math.ceil(n * (t ** 3)))
         return int(np.clip(n, self.min_particles, self.max_particles))
 
-    def cso_resample(self, target_count=None):
+    def systematic_resample(self, target_count: Optional[int] = None,
+                            inject_ratio: float = 0.05, noise_scale: float = 0.15) -> None:
+        """Systematic resampling with diversity injection.
+
+        Preserves high-weight particles through stratified sampling, then
+        injects a small fraction of random particles to maintain diversity.
+        """
+        if not self.particles:
+            self.particles = self._spawn_particles(self.min_particles)
+            return
+        self._normalize_weights()
+        live = [p for p in self.particles if getattr(p, "alive", True) and p.weight > 0.0]
+        if not live:
+            center = getattr(self, "estimate", (self.x0, self.y0))
+            self.particles = self._spawn_particles(self.min_particles, center=center)
+            self._normalize_weights()
+            return
+
+        n_live = len(live)
+        if target_count is None:
+            target_count = n_live
+        target_count = int(np.clip(target_count, self.min_particles, self.max_particles))
+        n_inject = max(1, int(target_count * inject_ratio))
+        n_copy = target_count - n_inject
+
+        weights = np.asarray([p.weight for p in live], dtype=float)
+        weights /= weights.sum()
+        cumsum = np.cumsum(weights)
+
+        new_particles = []
+        u0 = float(self.rng.uniform(0.0, 1.0 / n_copy))
+        for i in range(n_copy):
+            u = u0 + float(i) / n_copy
+            idx = int(np.searchsorted(cumsum, u))
+            idx = min(idx, n_live - 1)
+            base = live[idx]
+            new_particles.append(Particle(
+                x=float(base.x + self.rng.normal(0.0, noise_scale)),
+                y=float(base.y + self.rng.normal(0.0, noise_scale)),
+                theta=float(((base.theta + self.rng.normal(0.0, 0.08) + math.pi)
+                             % (2.0 * math.pi)) - math.pi),
+                weight=1.0 / target_count,
+                mag_hist=list(base.mag_hist[-64:]),
+            ))
+
+        for _ in range(n_inject):
+            nx, ny = self._random_in_strict_map()
+            new_particles.append(Particle(
+                x=nx, y=ny,
+                theta=float(self.rng.uniform(-math.pi, math.pi)),
+                weight=1.0 / target_count,
+            ))
+
+        self.particles = new_particles
+        self.n_particles = len(self.particles)
+        self._normalize_weights()
+
+    def cso_resample(self, target_count: Optional[int] = None) -> None:
         if not self.particles:
             self.particles = self._spawn_particles(self.min_particles)
             return

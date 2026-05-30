@@ -7,13 +7,50 @@ name = "geomagnetic-positioning-ddtw"
 version = "0.1.0"
 description = "Geomagnetic + IMU fusion experiments with PF/DDTW on UJIIndoorLoc-Mag."
 requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+  {name = "tianhs6523", email = "kudoumakoto6523@gmail.com"},
+]
+keywords = [
+  "geomagnetic-positioning",
+  "indoor-localization",
+  "particle-filter",
+  "ddtw",
+  "pdr",
+  "imu",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: GIS",
+]
 dependencies = [
   "numpy>=1.24",
   "pykrige>=1.7",
   "matplotlib>=3.7",
-  "gstools",
-  "pykrige"
+  "gstools>=1.5",
+  "bokeh>=3.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+  "ruff>=0.1",
+  "mypy>=1.0",
+]
+
+[project.scripts]
+geomag = "main:main"
+geomag-web = "geomag_web_app:main"
+
+[project.urls]
+Homepage = "https://github.com/tianhs6523/Lego-like-Geomagnetic-Positioning"
+Repository = "https://github.com/tianhs6523/Lego-like-Geomagnetic-Positioning"
+Issues = "https://github.com/tianhs6523/Lego-like-Geomagnetic-Positioning/issues"
 
 [tool.map_builder]
 preview_resolution = 1.0
@@ -28,3 +65,27 @@ output_png = "data/processed/uji_mag_grid_kriging.png"
 [tool.setuptools.packages.find]
 include = ["Geomag*"]
 exclude = ["data*", "tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = ["-v", "--tb=short", "--strict-markers"]
+markers = [
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "integration: marks tests as integration tests",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]  # line-too-long handled by formatter
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true

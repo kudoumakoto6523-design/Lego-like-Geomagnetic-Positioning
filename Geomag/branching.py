@@ -121,7 +121,8 @@ def build_uji_configs():
         particle_size_params={"epsilon": 0.10, "bin_size_xy": 0.5, "bin_size_theta": 0.35},
         resample_trigger="ess_or_target",
         resample_trigger_params={"ess_ratio_threshold": 0.40},
-        resample="cso",
+        resample="systematic",
+        resample_params={"inject_ratio": 0.05, "noise_scale": 0.15},
     )
     return pdr_config, pf_config
 
@@ -155,7 +156,8 @@ def build_own_package_configs():
         particle_size_params={"epsilon": 0.10, "bin_size_xy": 0.5, "bin_size_theta": 0.35},
         resample_trigger="ess_or_target",
         resample_trigger_params={"ess_ratio_threshold": 0.40},
-        resample="cso",
+        resample="systematic",
+        resample_params={"inject_ratio": 0.05, "noise_scale": 0.15},
     )
     return pdr_config, pf_config
 
@@ -175,8 +177,17 @@ def build_own_branch_configs():
         mag="norm_mean",
     )
     pf_config = PFConfig(
-        state_params={"num_particles": 5000},
+        state_params={"num_particles": 5000, "min_particles": 2000},
+        motion="gaussian",
+        motion_params={"heading_noise_std": 0.12, "step_noise_std": 0.22},
+        weight="ddtw",
         weight_params={"sigma": 0.5},
+        particle_size="kld",
+        particle_size_params={"epsilon": 0.10, "bin_size_xy": 0.5, "bin_size_theta": 0.35},
+        resample_trigger="ess_or_target",
+        resample_trigger_params={"ess_ratio_threshold": 0.40},
+        resample="systematic",
+        resample_params={"inject_ratio": 0.05, "noise_scale": 0.15},
     )
     return pdr_config, pf_config
 
@@ -470,6 +481,18 @@ def run_uji_branch(config: BranchConfig):
 
 
 def run_own_branch(config: BranchConfig):
+    """Run simulation on own (custom) data.
+
+    Design note: This function manages its own sensor loop because own-data
+    requires custom heading correction (``corrected_own_heading``) and route
+    trimming not yet exposed through ``Experiment.run()``.  The PF update
+    **does** go through the composable pipeline via ``pf_module.step()``,
+    which invokes the same registered blocks as ``GeomagPipeline.run()``.
+
+    When own-data heading/trim support is added to the pipeline config,
+    this function should be refactored to use ``Experiment.run()`` like
+    ``run_uji_branch`` does.
+    """
     profile = str(config.own_profile).strip().lower()
     use_registry = profile in {"package", "registry"}
     if profile not in {"own_branch", "legacy", "web", "package", "registry"}:

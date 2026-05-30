@@ -1,40 +1,43 @@
 import math
 import inspect
 from abc import ABC, abstractmethod
-from typing import Callable
+from typing import Any, Callable, Optional
 
 import numpy as np
 
 from Geomag import algorithms
+from Geomag.distance import _ddtw_distance, _wrap_angle_pi
 
 
 class Registry:
-    def __init__(self, name: str):
+    """Generic name→builder registry (inspired by PyTorch's optimizer registry)."""
+
+    def __init__(self, name: str) -> None:
         self.name = name
         self._builders: dict[str, Callable[..., object]] = {}
         self._param_docs: dict[str, dict[str, object]] = {}
 
-    def register(self, key: str, param_docs=None):
+    def register(self, key: str, param_docs: Optional[dict] = None) -> Callable:
         key = str(key).lower()
 
-        def decorator(builder: Callable[..., object]):
+        def decorator(builder: Callable[..., object]) -> Callable[..., object]:
             self._builders[key] = builder
             self._param_docs[key] = dict(param_docs or {})
             return builder
 
         return decorator
 
-    def build(self, key: str, **kwargs):
+    def build(self, key: str, **kwargs: Any) -> object:
         token = str(key).lower()
         if token not in self._builders:
             available = ", ".join(sorted(self._builders))
             raise ValueError(f"Unknown {self.name} block '{key}'. Available: [{available}]")
         return self._builders[token](**kwargs)
 
-    def keys(self):
+    def keys(self) -> list[str]:
         return sorted(self._builders.keys())
 
-    def describe(self):
+    def describe(self) -> dict[str, dict[str, dict]]:
         return {
             key: {
                 "params": self._param_docs.get(key, {}),
@@ -43,7 +46,7 @@ class Registry:
         }
 
 
-def describe_callable_params(callable_obj):
+def describe_callable_params(callable_obj: Callable) -> dict[str, Any]:
     signature = inspect.signature(callable_obj)
     params = {}
     for name, param in signature.parameters.items():
@@ -51,155 +54,136 @@ def describe_callable_params(callable_obj):
             continue
         if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             continue
-        default = None if param.default is inspect._empty else param.default
+        default = None if param.default is inspect.Parameter.empty else param.default
         params[name] = default
     return params
 
 
 class StepJudgeBlock(ABC):
+    """Detect whether a buffered sample window contains a completed step."""
+
     @abstractmethod
-    def forward(self, samples) -> bool:
+    def forward(self, samples: list[list[float]]) -> bool:
         raise NotImplementedError
 
 
 class StepLengthBlock(ABC):
+    """Estimate step length from buffered samples (metres)."""
+
     @abstractmethod
-    def forward(self, samples) -> float:
+    def forward(self, samples: list[list[float]]) -> float:
         raise NotImplementedError
 
 
 class HeadingBlock(ABC):
+    """Estimate heading angle from buffered samples (radians)."""
+
     @abstractmethod
-    def forward(self, samples) -> float:
+    def forward(self, samples: list[list[float]]) -> float:
         raise NotImplementedError
 
 
 class MagBlock(ABC):
+    """Extract a scalar magnetic feature from the current sensor frame."""
+
     @abstractmethod
     def forward(self) -> float:
         raise NotImplementedError
 
 
 class MotionBlock(ABC):
+    """Apply a motion model to each particle."""
+
     @abstractmethod
-    def forward(self, pf_state, step_len: float, heading_angle: float):
+    def forward(self, pf_state: Any, step_len: float, heading_angle: float) -> None:
         raise NotImplementedError
 
 
 class WeightBlock(ABC):
+    """Update particle weights based on magnetic observation."""
+
     @abstractmethod
-    def forward(self, pf_state, geomag_seq):
+    def forward(self, pf_state: Any, geomag_seq: list[float]) -> None:
         raise NotImplementedError
 
 
 class ResampleBlock(ABC):
+    """Resample the particle set."""
+
     @abstractmethod
-    def forward(self, pf_state, target_count: int):
+    def forward(self, pf_state: Any, target_count: int) -> None:
         raise NotImplementedError
 
 
 class ParticleSizeBlock(ABC):
+    """Determine the desired number of particles."""
+
     @abstractmethod
-    def forward(self, pf_state) -> int:
+    def forward(self, pf_state: Any) -> int:
         raise NotImplementedError
 
 
 class ResampleTriggerBlock(ABC):
+    """Decide whether resampling should occur."""
+
     @abstractmethod
-    def should_resample(self, pf_state, target_count: int, **kwargs) -> bool:
+    def should_resample(self, pf_state: Any, target_count: int, **kwargs: Any) -> bool:
         raise NotImplementedError
 
 
 class AlgoStepJudge(StepJudgeBlock):
-    def __init__(self, method="peak_dynamic", **kwargs):
+    def __init__(self, method: str = "peak_dynamic", **kwargs: Any) -> None:
         self.method = method
         self.kwargs = kwargs
 
-    def forward(self, samples) -> bool:
+    def forward(self, samples: list[list[float]]) -> bool:
         return bool(algorithms.judge_step(samples, method=self.method, **self.kwargs))
 
 
 class AlgoStepLength(StepLengthBlock):
-    def __init__(self, method="weinberg", **kwargs):
+    def __init__(self, method: str = "weinberg", **kwargs: Any) -> None:
         self.method = method
         self.kwargs = kwargs
 
-    def forward(self, samples) -> float:
+    def forward(self, samples: list[list[float]]) -> float:
         return float(algorithms.get_step_len(samples, method=self.method, **self.kwargs))
 
 
 class AlgoHeading(HeadingBlock):
-    def __init__(self, method="q_fused", **kwargs):
+    def __init__(self, method: str = "q_fused", **kwargs: Any) -> None:
         self.method = method
         self.kwargs = kwargs
 
-    def forward(self, samples) -> float:
+    def forward(self, samples: list[list[float]]) -> float:
         return float(algorithms.get_heading_angle(samples, method=self.method, **self.kwargs))
 
 
 class AlgoMag(MagBlock):
-    def __init__(self, method="norm_mean"):
+    def __init__(self, method: str = "norm_mean") -> None:
         self.method = method
 
     def forward(self) -> float:
         return float(algorithms.get_mag(method=self.method))
 
 
-def _derivative_sequence(x):
-    x = np.asarray(x, dtype=float).reshape(-1)
-    if x.size <= 1:
-        return x.copy()
-    if x.size == 2:
-        return np.asarray([x[1] - x[0]], dtype=float)
-    d = np.empty_like(x, dtype=float)
-    d[0] = float(x[1] - x[0])
-    d[-1] = float(x[-1] - x[-2])
-    d[1:-1] = 0.5 * (x[2:] - x[:-2])
-    return d
-
-
-def _zscore(x):
-    x = np.asarray(x, dtype=float).reshape(-1)
-    if x.size == 0:
-        return x
-    mu = float(np.mean(x))
-    sd = float(np.std(x))
-    if sd < 1e-8:
-        return x - mu
-    return (x - mu) / sd
-
-
-def _ddtw_distance(a, b, window_ratio=0.25):
-    a = _zscore(_derivative_sequence(a))
-    b = _zscore(_derivative_sequence(b))
-    if a.size == 0 or b.size == 0:
-        return 0.0
-
-    n, m = int(a.size), int(b.size)
-    window = max(abs(n - m), int(max(n, m) * float(window_ratio)), 4)
-    dp = np.full((n + 1, m + 1), np.inf, dtype=float)
-    dp[0, 0] = 0.0
-
-    for i in range(1, n + 1):
-        j0 = max(1, i - window)
-        j1 = min(m, i + window)
-        ai = float(a[i - 1])
-        for j in range(j0, j1 + 1):
-            cost = abs(ai - float(b[j - 1]))
-            dp[i, j] = cost + min(dp[i - 1, j], dp[i, j - 1], dp[i - 1, j - 1])
-    return float(dp[n, m] / max(1, n + m))
-
-
-def _wrap_angle_pi(rad):
-    return float(((rad + math.pi) % (2.0 * math.pi)) - math.pi)
-
 
 class GaussianMotion(MotionBlock):
-    def __init__(self, heading_noise_std=0.12, step_noise_std=0.22):
+    """Gaussian motion model with configurable boundary handling.
+
+    Parameters
+    ----------
+    boundary_handling : str
+        ``"kill"`` — particles outside strict bounds are killed (legacy).
+        ``"clamp"`` — particles are soft-clamped to the nearest boundary.
+    """
+
+    def __init__(self, heading_noise_std: float = 0.12, step_noise_std: float = 0.22,
+                 boundary_handling: str = "kill") -> None:
         self.heading_noise_std = float(heading_noise_std)
         self.step_noise_std = float(step_noise_std)
+        self.boundary_handling = str(boundary_handling).lower()
 
-    def forward(self, pf_state, step_len: float, heading_angle: float):
+    def forward(self, pf_state: Any, step_len: float, heading_angle: float) -> None:
         rng = getattr(pf_state, "rng", np.random.default_rng(42))
         for p in pf_state.particles:
             if not getattr(p, "alive", True):
@@ -210,20 +194,40 @@ class GaussianMotion(MotionBlock):
             nx = float(p.x + dist * math.cos(theta))
             ny = float(p.y + dist * math.sin(theta))
             if not pf_state.in_strict_map_bounds(nx, ny):
-                pf_state.kill_particle(p)
-                continue
+                if self.boundary_handling == "clamp":
+                    nx, ny = pf_state.clamp_to_strict_map(nx, ny)
+                else:
+                    pf_state.kill_particle(p)
+                    continue
             p.x, p.y = float(nx), float(ny)
 
 
 class DDTWWeight(WeightBlock):
-    def __init__(self, sigma=None, max_hist=100, window_ratio=0.25, instant_sigma=None, accumulate=True):
+    """DDTW-based particle weight update.
+
+    Parameters
+    ----------
+    accumulate_mode : str
+        ``"multiply"`` — multiplicative accumulation (legacy).
+        ``"average"`` — EMA: ``w = alpha*prior + (1-alpha)*current``.
+        ``"max"`` — ``w = max(prior, current)`` (forgiving).
+    alpha : float
+        EMA smoothing factor (only used when ``accumulate_mode="average"``).
+    """
+
+    def __init__(self, sigma: Optional[float] = None, max_hist: int = 100,
+                 window_ratio: float = 0.25, instant_sigma: Optional[float] = None,
+                 accumulate: bool = True, accumulate_mode: str = "multiply",
+                 alpha: float = 0.7) -> None:
         self.sigma = sigma
         self.max_hist = int(max_hist)
         self.window_ratio = float(window_ratio)
         self.instant_sigma = instant_sigma
         self.accumulate = bool(accumulate)
+        self.accumulate_mode = str(accumulate_mode).lower()
+        self.alpha = float(np.clip(alpha, 0.0, 1.0))
 
-    def forward(self, pf_state, geomag_seq):
+    def forward(self, pf_state: Any, geomag_seq: list[float]) -> None:
         obs = np.asarray(list(geomag_seq), dtype=float).reshape(-1)
         sigma = float(self.sigma if self.sigma is not None else getattr(pf_state, "weight_sigma", 8.0))
         instant_sigma = (
@@ -253,23 +257,57 @@ class DDTWWeight(WeightBlock):
                 weight = w_ddtw * w_inst
             else:
                 weight = w_ddtw
-            p.weight = float(max(1e-12, prior_weight * weight))
+
+            weight = float(max(1e-12, weight))
+
+            if not self.accumulate:
+                p.weight = weight
+            elif self.accumulate_mode == "average":
+                p.weight = float(self.alpha * prior_weight + (1.0 - self.alpha) * weight)
+            elif self.accumulate_mode == "max":
+                p.weight = float(max(prior_weight, weight))
+            else:  # "multiply" (legacy)
+                p.weight = float(max(1e-12, prior_weight * weight))
         pf_state._normalize_weights()
 
 
 class CSOResample(ResampleBlock):
-    def forward(self, pf_state, target_count: int):
+    def forward(self, pf_state: Any, target_count: int) -> None:
         pf_state.cso_resample(target_count=target_count)
 
 
+class SystematicResample(ResampleBlock):
+    """Systematic resampling with diversity injection.
+
+    Parameters
+    ----------
+    inject_ratio : float
+        Fraction of particles replaced with random samples (0.0–1.0).
+    noise_scale : float
+        Gaussian noise std added to copied particles (metres).
+    """
+
+    def __init__(self, inject_ratio: float = 0.05, noise_scale: float = 0.15) -> None:
+        self.inject_ratio = float(np.clip(inject_ratio, 0.0, 1.0))
+        self.noise_scale = float(max(0.0, noise_scale))
+
+    def forward(self, pf_state: Any, target_count: int) -> None:
+        pf_state.systematic_resample(
+            target_count=target_count,
+            inject_ratio=self.inject_ratio,
+            noise_scale=self.noise_scale,
+        )
+
+
 class KLDSampleSize(ParticleSizeBlock):
-    def __init__(self, epsilon=0.12, z=1.96, bin_size_xy=0.8, bin_size_theta=0.35):
+    def __init__(self, epsilon: float = 0.12, z: float = 1.96,
+                 bin_size_xy: float = 0.8, bin_size_theta: float = 0.35) -> None:
         self.epsilon = float(epsilon)
         self.z = float(z)
         self.bin_size_xy = float(bin_size_xy)
         self.bin_size_theta = float(bin_size_theta)
 
-    def forward(self, pf_state) -> int:
+    def forward(self, pf_state: Any) -> int:
         return int(
             pf_state.adapt_particle_count_kld(
                 epsilon=self.epsilon,
@@ -281,14 +319,15 @@ class KLDSampleSize(ParticleSizeBlock):
 
 
 class ESSOrTargetTrigger(ResampleTriggerBlock):
-    def __init__(self, ess_ratio_threshold=0.5, warmup_steps=8, min_weight_cv=0.01, flat_ess_ratio=0.95):
+    def __init__(self, ess_ratio_threshold: float = 0.5, warmup_steps: int = 8,
+                 min_weight_cv: float = 0.01, flat_ess_ratio: float = 0.95) -> None:
         self.ess_ratio_threshold = float(ess_ratio_threshold)
         self.warmup_steps = int(max(0, warmup_steps))
         self.min_weight_cv = float(max(0.0, min_weight_cv))
         self.flat_ess_ratio = float(np.clip(flat_ess_ratio, 0.0, 1.0))
 
     @staticmethod
-    def _weight_cv(pf_state) -> float:
+    def _weight_cv(pf_state: Any) -> float:
         ws = np.asarray([max(float(p.weight), 0.0) for p in pf_state.particles], dtype=float)
         if ws.size == 0:
             return 0.0
@@ -301,7 +340,7 @@ class ESSOrTargetTrigger(ResampleTriggerBlock):
             return 0.0
         return float(np.std(wn) / (mu + 1e-12))
 
-    def should_resample(self, pf_state, target_count: int, hist_len=None, **kwargs) -> bool:
+    def should_resample(self, pf_state: Any, target_count: int, hist_len: Optional[int] = None, **kwargs: Any) -> bool:
         curr_n = max(1, len(pf_state.particles))
         ess = float(pf_state.effective_sample_size())
         if ess < self.ess_ratio_threshold * curr_n:
@@ -322,7 +361,7 @@ class ESSOrTargetTrigger(ResampleTriggerBlock):
 
 
 class AlwaysTrigger(ResampleTriggerBlock):
-    def should_resample(self, pf_state, target_count: int, **kwargs) -> bool:
+    def should_resample(self, pf_state: Any, target_count: int, **kwargs: Any) -> bool:
         return True
 
 
@@ -415,6 +454,11 @@ def _build_weight_ddtw(**kwargs):
 @RESAMPLE_REGISTRY.register("cso", param_docs={})
 def _build_resample_cso(**kwargs):
     return CSOResample()
+
+
+@RESAMPLE_REGISTRY.register("systematic", param_docs=describe_callable_params(SystematicResample.__init__))
+def _build_resample_systematic(**kwargs):
+    return SystematicResample(**kwargs)
 
 
 @PARTICLE_SIZE_REGISTRY.register("kld", param_docs=describe_callable_params(KLDSampleSize.__init__))

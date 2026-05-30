@@ -43,6 +43,7 @@ no external dependencies beyond Bokeh itself are needed.
 """
 
 import json
+import logging
 import math
 import random
 from dataclasses import dataclass
@@ -63,11 +64,9 @@ from bokeh.models import (
 )
 from bokeh.plotting import figure
 
+logger = logging.getLogger(__name__)
+
 try:
-    # Attempt to import the project’s simulation API.  When running inside
-    # the original repository this import will succeed and the real
-    # implementation will be used.  If the package cannot be found the
-    # simulation will fall back to a random walk defined below.
     from Geomag.branching import (
         BranchConfig,
         parse_route_control_points,
@@ -76,6 +75,10 @@ try:
         run_branch_simulation,
     )
 except Exception:
+    logger.warning(
+        "Geomag package not available — falling back to synthetic random walk. "
+        "Install the package with ‘pip install -e .’ for real simulation."
+    )
     BranchConfig = None  # type: ignore
     parse_route_control_points = None  # type: ignore
     resolve_own_selection = None  # type: ignore
@@ -168,8 +171,10 @@ def run_simulation(params: dict) -> Tuple[np.ndarray, np.ndarray]:
                 x_data, y_data = _synthetic_random_walk(n=params.get("max_frames", 200))
             return x_data, y_data
         except Exception:
+            logger.exception("Simulation failed — falling back to synthetic random walk.")
             return _synthetic_random_walk(n=params.get("max_frames", 200))
     # Fallback when the simulation API is unavailable
+    logger.warning("Simulation API not available — using synthetic random walk.")
     return _synthetic_random_walk(n=params.get("max_frames", 200))
 
 

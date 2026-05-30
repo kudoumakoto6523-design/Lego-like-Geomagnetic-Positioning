@@ -1,4 +1,7 @@
+import logging
 from Geomag.algorithms import get_map, get_sensor, get_test_len
+
+logger = logging.getLogger(__name__)
 
 
 def collect_sensor_stream(source, **kwargs):
@@ -38,6 +41,10 @@ def get_uji_map():
     try:
         return get_map(source="uji")
     except Exception:
+        logger.warning(
+            "UJI map building failed — falling back to pre-built artifacts. "
+            "Install pykrige and gstools for full map building support."
+        )
         return {
             "source": "uji",
             "output_model_npz": "data/processed/uji_mag_model_kriging.npz",

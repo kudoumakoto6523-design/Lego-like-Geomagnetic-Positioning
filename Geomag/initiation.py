@@ -1,5 +1,8 @@
+import logging
 from Geomag.algorithms import get_map
 from Geomag.models import RunContext
+
+logger = logging.getLogger(__name__)
 
 
 class Initializer:
@@ -49,6 +52,10 @@ class Initializer:
             try:
                 geomag_map = get_map(source="uji", data_root=self.data_root)
             except Exception:
+                logger.warning(
+                    "UJI map building failed — falling back to pre-built artifacts. "
+                    "Install pykrige and gstools for full map building support."
+                )
                 geomag_map = {
                     "source": "uji",
                     "output_model_npz": "data/processed/uji_mag_model_kriging.npz",

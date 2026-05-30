@@ -11,6 +11,7 @@ from pykrige.ok import OrdinaryKriging
 import numpy as np
 
 from Geomag.own_dataset_registry import get_own_dataset_spec, get_own_route_xy_m
+from Geomag.distance import _ddtw_distance, _derivative_sequence, _latlon_to_xy, _wrap_angle_pi, _zscore
 
 UJI_ZIP_URL = "https://archive.ics.uci.edu/static/public/343/ujiindoorloc%2Bmag.zip"
 MARKER_RE = re.compile(r"<\d+>")
@@ -192,14 +193,6 @@ def _collect_uji_points(dataset_root):
 
     return np.concatenate(lat_all), np.concatenate(lon_all), np.concatenate(mag_all)
 
-
-def _latlon_to_xy(lat, lon, lat0, lon0):
-    radius = 6378137.0
-    dlat = np.radians(lat - lat0)
-    dlon = np.radians(lon - lon0)
-    x = radius * dlon * np.cos(np.radians((lat + lat0) * 0.5))
-    y = radius * dlat
-    return x, y
 
 
 def _reduce_points_for_kriging(x, y, z, max_points, seed):
@@ -1243,8 +1236,6 @@ def _api_get_step_len(samples, method=None, **kwargs):
 
 
 # TODO: Estimate heading angle from buffered samples.
-def _wrap_angle_pi(rad):
-    return float(((rad + math.pi) % (2.0 * math.pi)) - math.pi)
 
 
 def _heading_from_acc_mag(acc, mag):
@@ -1430,93 +1421,45 @@ def _api_get_mag(method="norm_mean"):
 
 
 # TODO: Run one particle-filter update step and return updated position.
-def _derivative_sequence(x):
-    x = np.asarray(x, dtype=float).reshape(-1)
-    if x.size <= 1:
-        return x.copy()
-    if x.size == 2:
-        return np.asarray([x[1] - x[0]], dtype=float)
-    d = np.empty_like(x, dtype=float)
-    d[0] = float(x[1] - x[0])
-    d[-1] = float(x[-1] - x[-2])
-    d[1:-1] = 0.5 * (x[2:] - x[:-2])
-    return d
-
-
-def _zscore(x):
-    x = np.asarray(x, dtype=float).reshape(-1)
-    if x.size == 0:
-        return x
-    mu = float(np.mean(x))
-    sd = float(np.std(x))
-    if sd < 1e-8:
-        return x - mu
-    return (x - mu) / sd
-
-
-def _ddtw_distance(a, b, window_ratio=0.25):
-    a = _zscore(_derivative_sequence(a))
-    b = _zscore(_derivative_sequence(b))
-    if a.size == 0 or b.size == 0:
-        return 0.0
-
-    n, m = int(a.size), int(b.size)
-    window = max(abs(n - m), int(max(n, m) * float(window_ratio)), 4)
-    dp = np.full((n + 1, m + 1), np.inf, dtype=float)
-    dp[0, 0] = 0.0
-    for i in range(1, n + 1):
-        j0 = max(1, i - window)
-        j1 = min(m, i + window)
-        ai = float(a[i - 1])
-        for j in range(j0, j1 + 1):
-            cost = abs(ai - float(b[j - 1]))
-            dp[i, j] = cost + min(dp[i - 1, j], dp[i, j - 1], dp[i - 1, j - 1])
-    return float(dp[n, m] / max(1, n + m))
-
-
+#
+# .. deprecated::
+#     Prefer ``GeomagPipeline`` or ``PFModule.step()`` for new code.
+#     This function is retained for backward compatibility with the
+#     procedural API but delegates to the same block implementations
+#     used by the composable pipeline.
 def _api_PF(step_len, heading_angle, geomag_list, pf_state):
+    """Run one PF update step (predict → update → resample).
+
+    This is a convenience wrapper around the composable pipeline blocks.
+    For new code, use ``GeomagPipeline`` or build a ``PFModule`` via
+    ``build_pf_from_config(PFConfig(...))`` instead.
+    """
+    from Geomag.blocks import MOTION_REGISTRY, WEIGHT_REGISTRY
+
     if pf_state is None or not hasattr(pf_state, "particles"):
         raise ValueError("PF requires a valid pf_state with particle storage.")
 
     step_len = float(step_len)
     heading_angle = float(heading_angle)
-    obs = np.asarray(list(geomag_list), dtype=float).reshape(-1)
-    sigma = float(getattr(pf_state, "weight_sigma", 3.0))
-    rng = getattr(pf_state, "rng", np.random.default_rng(42))
+
     if getattr(pf_state, "map_points", None) is None:
-        # No map available: return dead-reckoning-like estimate.
         return pf_state.get_pos()
 
-    for p in pf_state.particles:
-        if not getattr(p, "alive", True):
-            p.weight = 0.0
-            continue
-        theta = _wrap_angle_pi(heading_angle + float(rng.normal(0.0, 0.12)))
-        dist = max(0.0, step_len + float(rng.normal(0.0, 0.22)))
-        p.theta = theta
-        nx = float(p.x + dist * math.cos(theta))
-        ny = float(p.y + dist * math.sin(theta))
-        if not pf_state.in_strict_map_bounds(nx, ny):
-            pf_state.kill_particle(p)
-            continue
-        p.x, p.y = nx, ny
+    # Use the same registered blocks as the composable pipeline.
+    sigma = float(getattr(pf_state, "weight_sigma", 3.0))
+    heading_noise = 0.12
+    step_noise = 0.22
 
-        pred_mag = float(pf_state.map_magnitude(p.x, p.y))
-        if not math.isfinite(pred_mag):
-            pf_state.kill_particle(p)
-            continue
-        p.mag_hist.append(pred_mag)
-        hist_len = int(max(1, min(len(obs), 100)))
-        pred_seq = np.asarray(p.mag_hist[-hist_len:], dtype=float)
-        obs_seq = obs[-hist_len:] if obs.size else np.asarray([pred_mag], dtype=float)
-        d = _ddtw_distance(obs_seq, pred_seq)
-        w_ddtw = math.exp(-((d * d) / (2.0 * sigma * sigma + 1e-12)))
-        w = float(max(1e-12, w_ddtw))
-        p.weight = w
+    motion = MOTION_REGISTRY.build(
+        "gaussian", heading_noise_std=heading_noise, step_noise_std=step_noise
+    )
+    weight = WEIGHT_REGISTRY.build("ddtw", sigma=sigma, max_hist=100)
+
+    motion.forward(pf_state, step_len=step_len, heading_angle=heading_angle)
+    weight.forward(pf_state, geomag_seq=list(geomag_list))
 
     pf_state._normalize_weights()
 
-    # KLD adaptive particle count.
     target_n = pf_state.adapt_particle_count_kld()
     ess = pf_state.effective_sample_size()
     if ess < 0.5 * len(pf_state.particles) or target_n != len(pf_state.particles):
@@ -2111,4 +2054,10 @@ def PF(*args, **kwargs):
 
 
 def visualize(*args, **kwargs):
-    return _api_visualize(*args, **kwargs)
+    """Render geomagnetic positioning results.
+
+    Delegates to ``Geomag.visualization.visualize()``.
+    (Lazy import avoids circular dependency with shared helpers.)
+    """
+    from Geomag.visualization import visualize as _vis
+    return _vis(*args, **kwargs)

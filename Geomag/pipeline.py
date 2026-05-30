@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from Geomag.algorithms import get_sensor, get_test_len, get_true_route, visualize
+from Geomag.distance import latlon_to_xy
 from Geomag.blocks import (
     HEADING_REGISTRY,
     MAG_REGISTRY,
@@ -312,15 +313,6 @@ class GeomagPipeline:
         }
 
     @staticmethod
-    def _latlon_to_xy(lat, lon, lat0, lon0):
-        radius = 6378137.0
-        dlat = np.radians(np.asarray(lat, dtype=float) - float(lat0))
-        dlon = np.radians(np.asarray(lon, dtype=float) - float(lon0))
-        x = radius * dlon * np.cos(np.radians((np.asarray(lat, dtype=float) + float(lat0)) * 0.5))
-        y = radius * dlat
-        return np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-
-    @staticmethod
     def _resolve_origin_latlon(geomag_map):
         if not isinstance(geomag_map, dict):
             return None, None
@@ -361,7 +353,7 @@ class GeomagPipeline:
         if origin_lat is None or origin_lon is None:
             return None, None
 
-        return cls._latlon_to_xy(arr[:, 0], arr[:, 1], origin_lat, origin_lon)
+        return latlon_to_xy(arr[:, 0], arr[:, 1], origin_lat, origin_lon)
 
     @staticmethod
     def _compute_error_series(track_xy, route_x, route_y):
