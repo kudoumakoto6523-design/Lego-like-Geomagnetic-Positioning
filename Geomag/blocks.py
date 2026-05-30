@@ -1,7 +1,8 @@
-import math
 import inspect
+import math
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -17,7 +18,7 @@ class Registry:
         self._builders: dict[str, Callable[..., object]] = {}
         self._param_docs: dict[str, dict[str, object]] = {}
 
-    def register(self, key: str, param_docs: Optional[dict] = None) -> Callable:
+    def register(self, key: str, param_docs: dict | None = None) -> Callable:
         key = str(key).lower()
 
         def decorator(builder: Callable[..., object]) -> Callable[..., object]:
@@ -215,8 +216,8 @@ class DDTWWeight(WeightBlock):
         EMA smoothing factor (only used when ``accumulate_mode="average"``).
     """
 
-    def __init__(self, sigma: Optional[float] = None, max_hist: int = 100,
-                 window_ratio: float = 0.25, instant_sigma: Optional[float] = None,
+    def __init__(self, sigma: float | None = None, max_hist: int = 100,
+                 window_ratio: float = 0.25, instant_sigma: float | None = None,
                  accumulate: bool = True, accumulate_mode: str = "multiply",
                  alpha: float = 0.7) -> None:
         self.sigma = sigma
@@ -340,7 +341,7 @@ class ESSOrTargetTrigger(ResampleTriggerBlock):
             return 0.0
         return float(np.std(wn) / (mu + 1e-12))
 
-    def should_resample(self, pf_state: Any, target_count: int, hist_len: Optional[int] = None, **kwargs: Any) -> bool:
+    def should_resample(self, pf_state: Any, target_count: int, hist_len: int | None = None, **kwargs: Any) -> bool:
         curr_n = max(1, len(pf_state.particles))
         ess = float(pf_state.effective_sample_size())
         if ess < self.ess_ratio_threshold * curr_n:

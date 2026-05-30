@@ -6,12 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
-from Geomag import PFConfig, PDRConfig, build_pdr_from_config, build_pf_from_config
+from data.own_data.magnetometer_map_own import data as own_map_raw
+from Geomag import PDRConfig, PFConfig, build_pdr_from_config, build_pf_from_config
 from Geomag.algorithms import get_map, get_sensor, get_test_len, get_true_route
 from Geomag.models import PFState
 from Geomag.own_dataset_registry import get_own_dataset_spec
 from Geomag.pipeline import GeomagPipeline
-from data.own_data.magnetometer_map_own import data as own_map_raw
 
 
 def build_main_configs():

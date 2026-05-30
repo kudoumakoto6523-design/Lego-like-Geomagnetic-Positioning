@@ -8,7 +8,6 @@ import math
 
 import numpy as np
 
-
 # Earth radius in metres (WGS-84).
 _EARTH_RADIUS_M = 6378137.0
 

@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -82,7 +82,7 @@ class PFState:
 
         return a, b
 
-    def _load_map_points(self, mag_map) -> Optional[dict[str, npt.NDArray[np.float64]]]:
+    def _load_map_points(self, mag_map) -> dict[str, npt.NDArray[np.float64]] | None:
         if not isinstance(mag_map, dict):
             return None
 
@@ -292,7 +292,7 @@ class PFState:
             return 0.0
         return float(1.0 / denom)
 
-    def map_magnitude(self, x: float, y: float, k: Optional[int] = None) -> float:
+    def map_magnitude(self, x: float, y: float, k: int | None = None) -> float:
         if self.map_points is None:
             return 0.0
         if not self.in_strict_map_bounds(x, y):
@@ -331,7 +331,7 @@ class PFState:
         n = int(math.ceil(n * (t ** 3)))
         return int(np.clip(n, self.min_particles, self.max_particles))
 
-    def systematic_resample(self, target_count: Optional[int] = None,
+    def systematic_resample(self, target_count: int | None = None,
                             inject_ratio: float = 0.05, noise_scale: float = 0.15) -> None:
         """Systematic resampling with diversity injection.
 
@@ -388,7 +388,7 @@ class PFState:
         self.n_particles = len(self.particles)
         self._normalize_weights()
 
-    def cso_resample(self, target_count: Optional[int] = None) -> None:
+    def cso_resample(self, target_count: int | None = None) -> None:
         if not self.particles:
             self.particles = self._spawn_particles(self.min_particles)
             return

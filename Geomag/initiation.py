@@ -1,4 +1,5 @@
 import logging
+
 from Geomag.algorithms import get_map
 from Geomag.models import RunContext
 

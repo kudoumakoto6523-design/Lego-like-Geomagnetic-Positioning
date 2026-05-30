@@ -1,4 +1,5 @@
 import logging
+
 from Geomag.algorithms import get_map, get_sensor, get_test_len
 
 logger = logging.getLogger(__name__)

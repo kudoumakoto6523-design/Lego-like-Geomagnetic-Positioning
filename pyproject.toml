@@ -84,6 +84,12 @@ line-length = 110
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 ignore = ["E501"]  # line-too-long handled by formatter
 
+[tool.ruff.lint.per-file-ignores]
+"Geomag/__init__.py" = ["N999"]          # package name "Geomag" is intentional
+"Geomag/algorithms.py" = ["N802"]         # legacy _api_PF / PF function names
+"Geomag/visualization.py" = ["F401"]      # matplotlib imported inside function for lazy-check
+"tests/run_benchmark.py" = ["B007", "B023"]  # benchmark script: loop vars + closure bindings
+
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true

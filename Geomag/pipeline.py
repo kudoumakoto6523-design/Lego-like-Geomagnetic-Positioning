@@ -4,19 +4,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
 from Geomag.algorithms import get_sensor, get_test_len, get_true_route, visualize
-from Geomag.distance import latlon_to_xy
 from Geomag.blocks import (
     HEADING_REGISTRY,
     MAG_REGISTRY,
     MOTION_REGISTRY,
     PARTICLE_SIZE_REGISTRY,
-    RESAMPLE_TRIGGER_REGISTRY,
     RESAMPLE_REGISTRY,
+    RESAMPLE_TRIGGER_REGISTRY,
     STEP_JUDGE_REGISTRY,
     STEP_LEN_REGISTRY,
     WEIGHT_REGISTRY,
 )
+from Geomag.distance import latlon_to_xy
 from Geomag.models import PFState
 from Geomag.nn import Module, Sequential
 

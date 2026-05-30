@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 
 from Geomag.distance import (
-    derivative_sequence,
-    zscore,
     ddtw_distance,
-    wrap_angle_pi,
+    derivative_sequence,
     latlon_to_xy,
+    wrap_angle_pi,
+    zscore,
 )
 
 

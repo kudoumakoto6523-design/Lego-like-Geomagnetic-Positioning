@@ -7,14 +7,20 @@ import numpy as np
 
 from Geomag import (
     Initializer,
-    PFConfig,
     PDRConfig,
+    PFConfig,
     build_pdr_from_config,
     build_pf_from_config,
 )
 from Geomag.algorithms import get_sensor, get_test_len, get_true_route
-from Geomag.models import PFState, Particle
-from Geomag.pipeline import GeomagPipeline, ParticleSizeStage, PredictStage, ResampleDecisionStage, UpdateStage
+from Geomag.models import Particle, PFState
+from Geomag.pipeline import (
+    GeomagPipeline,
+    ParticleSizeStage,
+    PredictStage,
+    ResampleDecisionStage,
+    UpdateStage,
+)
 
 
 def build_main_configs():

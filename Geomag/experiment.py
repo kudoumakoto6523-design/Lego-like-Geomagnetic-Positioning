@@ -1,7 +1,7 @@
 from Geomag.pipeline import (
     GeomagPipeline,
-    PFConfig,
     PDRConfig,
+    PFConfig,
     build_pdr_from_config,
     build_pf_from_config,
 )

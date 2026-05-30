@@ -1,11 +1,12 @@
 """Benchmark: test PF configs on the SAME dataset (route1_run1 via package profile)."""
-import json, time
+import json
+import time
 from pathlib import Path
 
 import numpy as np
 
 from Geomag import PFConfig
-from Geomag.branching import BranchConfig, build_own_configs, run_own_branch
+from Geomag.branching import BranchConfig, run_own_branch
 
 
 def mk_pf(sigma, accum_mode, alpha, resample, boundary, heading_noise=0.08, step_noise=0.15):

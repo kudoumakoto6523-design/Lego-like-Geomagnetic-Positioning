@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 TILE_COUNT_X = 12
 TILE_COUNT_Y = 8
 TILE_SIZE_X_M = 0.96

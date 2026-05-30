@@ -12,7 +12,6 @@ import numpy as np
 from Geomag.algorithms import _bool_from_any, _fit_ordinary_kriging, _safe_float
 from Geomag.distance import _latlon_to_xy
 
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

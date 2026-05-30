@@ -3,12 +3,8 @@
 import pytest
 
 from Geomag.blocks import (
-    Registry,
-    AlgoStepJudge,
-    AlgoStepLength,
-    AlgoHeading,
-    AlgoMag,
     AlwaysTrigger,
+    Registry,
     describe_callable_params,
 )
 

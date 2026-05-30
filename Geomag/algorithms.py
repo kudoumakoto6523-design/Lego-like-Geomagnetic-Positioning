@@ -1,17 +1,18 @@
+import csv
 import json
 import math
 import re
 import tomllib
 import zipfile
-import csv
 from pathlib import Path
 from urllib.request import urlretrieve
-from gstools import Gaussian, krige
-from pykrige.ok import OrdinaryKriging
-import numpy as np
 
+import numpy as np
+from gstools import Gaussian
+from pykrige.ok import OrdinaryKriging
+
+from Geomag.distance import _latlon_to_xy, _wrap_angle_pi
 from Geomag.own_dataset_registry import get_own_dataset_spec, get_own_route_xy_m
-from Geomag.distance import _ddtw_distance, _derivative_sequence, _latlon_to_xy, _wrap_angle_pi, _zscore
 
 UJI_ZIP_URL = "https://archive.ics.uci.edu/static/public/343/ujiindoorloc%2Bmag.zip"
 MARKER_RE = re.compile(r"<\d+>")
@@ -723,7 +724,7 @@ def _parse_uji_true_route_file(path):
         lat[missing_idx] = np.interp(missing_idx, valid_idx, lat[valid_idx])
         lon[missing_idx] = np.interp(missing_idx, valid_idx, lon[valid_idx])
 
-    return [[float(a), float(b)] for a, b in zip(lat, lon)]
+    return [[float(a), float(b)] for a, b in zip(lat, lon, strict=True)]
 
 
 def _normalize_name(name):

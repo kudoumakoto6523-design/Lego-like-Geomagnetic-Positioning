@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from Geomag.models import Particle, PFState, RunContext
-from Geomag.distance import wrap_angle_pi
 
 
 class TestParticle:

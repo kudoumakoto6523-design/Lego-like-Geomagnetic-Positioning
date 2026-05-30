@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from Geomag import Experiment, Initializer, PFConfig, PDRConfig, build_pdr_from_config, build_pf_from_config
+from Geomag import Experiment, Initializer, PDRConfig, PFConfig, build_pdr_from_config, build_pf_from_config
 from Geomag.algorithms import get_map, get_sensor, get_test_len, get_true_route
 from Geomag.models import PFState
 from Geomag.own_dataset_registry import available_own_dataset_keys, get_own_dataset_spec
@@ -309,7 +309,7 @@ def densify_route_controls(route_xy, step_size=0.05):
         endpoint = i == pts.shape[0] - 2
         xs = np.linspace(float(p1[0]), float(p2[0]), n, endpoint=endpoint)
         ys = np.linspace(float(p1[1]), float(p2[1]), n, endpoint=endpoint)
-        for x, y in zip(xs, ys):
+        for x, y in zip(xs, ys, strict=True):
             dense.append([float(x), float(y)])
     return dense
 
