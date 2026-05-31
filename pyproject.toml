@@ -66,6 +66,9 @@ output_png = "data/processed/uji_mag_grid_kriging.png"
 include = ["Geomag*"]
 exclude = ["data*", "tests*"]
 
+[tool.setuptools]
+py-modules = ["main", "geomag_web_app"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

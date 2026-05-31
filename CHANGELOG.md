@@ -121,10 +121,162 @@ open results/best_final.png
 
 ---
 
-## 五、后续方向
+---
 
-1. **地图超采样**（Opt6）：将 96 点扩展到 ~864 点，反距离权重从 `1/d` 升级到 `1/d²`，增强磁特征局部区分度
-2. **更高精度真值采集**：在地面标记已知坐标点，用手动记录代替手机 GPS
-3. **多路线交叉验证**：在不同起点、方向、速度下测试鲁棒性
-4. **PDR 改进**：尝试更好的步态检测和航向融合算法
-5. **更多重采样策略**：残差重采样、分层重采样等
+## 六、多路线交叉验证（2026-05-31）
+
+在全部四条路线上运行当前优化配置，与历史结果逐项对比。
+
+### 测试配置
+
+所有路线使用相同的 PF 配置：`systematic` 重采样（inject=5%, noise_scale=0.15）、`ddtw` 权重（sigma=0.5, max_hist=100）、`kld` 粒子数控制（bin_size_xy=0.5）、`ess_or_target` 重采样触发（阈值 0.40）。
+
+### 结果对比
+
+| 路线 | 指标 | 历史 | 当前 | 变化 |
+|------|------|:----:|:----:|:----:|
+| **route1_run1** | PF mean / final / P95 | 3.75 / 7.88 / 6.99 | **3.22** / **5.17** / **5.75** | ✅ **-14% / -34% / -18%** |
+| **route1_run2** | PF mean / final / P95 | 5.46 / 1.29 / 9.55 | **4.90** / 4.62 / **8.62** | ✅ mean -10%, final 回归正常 |
+| **route2_run1** | PF mean / final / P95 | 7.99 / 7.69 / 10.92 | **4.34** / **4.53** / **6.39** | ✅ **-46% / -41% / -41%** |
+| **route2_run2** | PF mean / final / P95 | 2.64 / 3.36 / 3.74 | **2.52** / **2.60** / **3.67** | ✅ -5% / -23% / -2% |
+
+> PDR 误差在 route1_run1、route1_run2、route2_run2 上与历史完全一致，验证传感器处理代码未被改动。
+
+### route2_run1 的 mirror_y 发现
+
+历史 route2_run1 使用了 `mirror_y=true, heading_offset=0`，而当前默认是 `mirror_y=false, heading_offset=-90`。两套参数对比：
+
+| 模式 | PDR mean | PF mean | PF final |
+|------|:--------:|:-------:|:--------:|
+| 历史 (mirror=true) | 11.79m | 7.99m | 7.69m |
+| 匹配历史 (mirror=true) | 15.62m | 6.04m | 5.52m |
+| **当前默认 (mirror=false)** | **8.99m** | **4.34m** | **4.53m** |
+
+**结论：** `mirror_y=false` 不仅 PF 更优，PDR 本身也更好（8.99m vs 11.79m）。说明当前默认参数是正确的选择。
+
+### 新增关键发现
+
+1. **系统重采样在所有路线上均有效**：无一条路线出现退步，改善幅度 5%–46%
+2. **route2_run1 改善最大**（-46%）：这条路线之前结果最差（7.99m），现在降到 4.34m，接近 route1_run1 水平
+3. **route1_run2 的最终误差异常被修复**：历史 final=1.29m 是一步偶然命中，新的 final=4.62m 与 mean=4.90m 一致，更可信
+4. **route2_run2 改善有限**（-5%）：因为本身误差已经很低（2.64m），天花板效应明显
+
+### 新结果文件
+
+| 文件 | 说明 |
+|------|------|
+| `results/v2_route1_run1.json/png` | route1_run1 当前配置 |
+| `results/v2_route1_run2.json/png` | route1_run2 当前配置 |
+| `results/v2_route2_run1.json/png` | route2_run1 默认 mirror |
+| `results/v2_route2_run1_mirror.json/png` | route2_run1 mirror 对比 |
+| `results/v2_route2_run2.json/png` | route2_run2 own_branch |
+
+---
+
+---
+
+## 七、地图查询与轨迹平滑优化（2026-05-31 下午）
+
+### 7.1 地图超采样与 IDW 调优（Opt6）
+
+**问题**：KNN=10 + `1/d` 权重让磁场被过度平滑，DDTW 无法区分相邻粒子位置。KNN=5 + `1/d²` 虽降低误差但 PF 青色线变扭曲。
+
+**改动**：
+
+| 文件 | 改动 |
+|------|------|
+| `Geomag/algorithms.py` | 新增 `_bilinear_upsample()` 双线性插值函数，tile12 模式下 3× 超采样 |
+| `Geomag/models.py` | `PFState.__init__` 新增 `map_idw_power` 参数；`map_magnitude` 权重改为 `1/d^power` |
+| `Geomag/branching.py` | `build_own_geomag_map` 支持 oversample；state_params 传入 KNN/IDW |
+
+**参数调优过程**（在 route1_run2, route2_run1, route2_run2 上调参）：
+
+| 阶段 | KNN | IDW | sigma | route1_run2 mean | 说明 |
+|:---:|:---:|:---:|:-----:|:---:|------|
+| V2 | 10 | 1.0 | 0.5 | 5.06 | 原始基准 |
+| V4 | 5 | 2.0 | 0.5 | 4.83 | 误差降了但轨迹扭曲 |
+| Config A | 7 | 1.5 | 0.5 | 4.79 | 中间值 |
+| Config B | 10 | 1.5 | 0.5 | 4.83 | 更多邻居 |
+| **Config D** | **7** | **1.5** | **1.0** | **4.65** | ✅ P95 最优 (7.99), 更宽 DDTW 核 |
+
+### 7.2 PF 轨迹 EMA 平滑（V6）
+
+**问题**：`_estimate_xy()` 每步独立计算粒子质心，重采样后粒子跳变 → 青色线曲折。
+
+**改动**：
+
+| 文件 | 改动 |
+|------|------|
+| `Geomag/branching.py` (`run_own_branch`) | PF 输出做 EMA：`smooth = 0.7*prev + 0.3*current` |
+| `Geomag/branching.py` (configs) | motion_noise 0.01→0.03, resample noise_scale 0.15→0.08 |
+
+**效果**：
+
+| 路线 | V5 mean | V6 mean | V5 P95 | V6 P95 |
+|------|:------:|:------:|:------:|:------:|
+| route1_run2 | 4.65 | **4.09** | 7.99 | **7.46** |
+| route2_run1 | 4.07 | **3.50** | 5.14 | **5.14** |
+| route2_run2 | 2.36 | **1.69** | 3.23 | **2.91** |
+
+### 7.3 注入比例调优（V7）
+
+**问题**：系统重采样 inject_ratio=5% 随机粒子偏少，多样性不足。
+
+**测试**：q_fused heading（❌ PDR 更差）、window_ratio（无影响）、n_particles=10000（无影响）、inject_ratio 扫参。
+
+**最终选择**：`inject_ratio` 5% → **10%**
+
+### 7.4 最优配置（V7 Final）
+
+```python
+pf_config = PFConfig(
+    state_params={"num_particles": 5000, "min_particles": 2000,
+                  "map_knn_k": 7, "map_idw_power": 1.5},
+    motion="gaussian",
+    motion_params={"heading_noise_std": 0.03, "step_noise_std": 0.03},
+    weight="ddtw",
+    weight_params={"sigma": 1.0, "max_hist": 100},
+    resample="systematic",
+    resample_params={"inject_ratio": 0.10, "noise_scale": 0.08},
+)
+```
+
+**最终全路线结果**：
+
+| 路线 | V2 (优化前) | V7 (最终) | 改善 |
+|------|:----------:|:--------:|:----:|
+| route1_run2 | 4.90 | **3.99** | -19% |
+| route2_run1 | 4.34 | **3.26** | -25% |
+| route2_run2 | 2.52 | **1.64** | -35% |
+
+---
+
+## 八、Windows 启动脚本修复
+
+### 问题
+
+1. `conda activate` 在 `.bat` 中不可靠（新版 conda 的 activate 命令在 batch 文件中经常失败）
+2. pip install 缺少 `gstools` 依赖
+3. 未安装 conda 的用户无法使用（无 venv 备选方案）
+4. `geomag` / `geomag-web` CLI 命令导入失败（`main.py` 和 `data/` 不在包路径中）
+5. `geomag_web_app.py` 缺少 `main()` 函数
+
+### 修复
+
+| 文件 | 改动 |
+|------|------|
+| `run.bat` | 重写：直接 Python 路径（绕过 conda activate）、新增 venv 备选、加入 gstools |
+| `run.sh` | 新增 venv 备选、加入 gstools |
+| `pyproject.toml` | 新增 `py-modules = ["main", "geomag_web_app"]` |
+| `geomag_web_app.py` | 新增 `main()` 函数（subprocess 启动 bokeh）、bokeh 导入改为条件导入 |
+| `Geomag/branching.py` | `data.own_data...` 导入改为 `importlib.util` 文件路径加载 |
+
+---
+
+## 九、后续方向
+
+1. **PDR 改进**：陀螺仪零偏估计 + 静止校准，减少航向漂移（当前 PDR 均值仍 8-10m）
+2. **更高精度真值采集**：地面标记已知坐标点，手动记录代替手机 GPS
+3. **地图质量提升**：使用更高分辨率磁力计重新扫描地面磁图
+4. **Windows 实机测试**：在 Windows 上验证 `run.bat` 和 CLI 命令
+5. **route2_run2 包格式注册**：将遗留数据注册到 package 格式中

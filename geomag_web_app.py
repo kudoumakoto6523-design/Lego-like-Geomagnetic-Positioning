@@ -439,7 +439,21 @@ class GeoMagApp:
         self.current_index += 1
 
 
-# Instantiate the application and add its layout to the current document
-app = GeoMagApp()
-curdoc().add_root(app.layout)
-curdoc().title = "Geomagnetic Positioning"
+def main():
+    """Entry point for 'geomag-web' console script.
+
+    Launches the Bokeh server and opens the app in a browser.
+    """
+    import subprocess
+    import sys
+
+    subprocess.run([sys.executable, "-m", "bokeh", "serve", "--show", __file__])
+
+
+if __name__ == "__main__":
+    main()
+else:
+    # Running under ``bokeh serve`` — register the app with curdoc
+    app = GeoMagApp()
+    curdoc().add_root(app.layout)
+    curdoc().title = "Geomagnetic Positioning"

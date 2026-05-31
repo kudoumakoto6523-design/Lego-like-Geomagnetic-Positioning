@@ -472,6 +472,45 @@ def _resolve_own_data_dir(own_data_dir, own_dataset_key=None):
     return Path(own_data_dir)
 
 
+def _bilinear_upsample(matrix: np.ndarray, factor: int) -> np.ndarray:
+    """Upsample a 2D array by an integer factor using bilinear interpolation.
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        2D input array of shape ``(H, W)``.
+    factor : int
+        Integer upsampling factor (e.g. 3 means each tile is subdivided into 3×3 sub-tiles).
+
+    Returns
+    -------
+    np.ndarray
+        Upsampled array of shape ``(H*factor, W*factor)``.
+    """
+    if factor <= 1:
+        return np.asarray(matrix, dtype=float)
+    h, w = matrix.shape
+    new_h, new_w = h * factor, w * factor
+    # Map new-grid coordinates back to source-grid coordinates
+    y_src = np.linspace(0, h - 1, new_h)
+    x_src = np.linspace(0, w - 1, new_w)
+    # Integer and fractional parts for bilinear weights
+    y0 = np.floor(y_src).astype(int)
+    y1 = np.clip(y0 + 1, 0, h - 1)
+    wy = (y_src - y0).reshape(-1, 1)  # column vector
+    x0 = np.floor(x_src).astype(int)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    wx = (x_src - x0).reshape(1, -1)  # row vector
+    # Bilinear: f(x,y) = (1-wx)(1-wy)*f00 + wx(1-wy)*f10 + (1-wx)wy*f01 + wx*wy*f11
+    result = (
+        (1 - wy) * (1 - wx) * matrix[y0[:, None], x0[None, :]]
+        + (1 - wy) * wx * matrix[y0[:, None], x1[None, :]]
+        + wy * (1 - wx) * matrix[y1[:, None], x0[None, :]]
+        + wy * wx * matrix[y1[:, None], x1[None, :]]
+    )
+    return np.asarray(result, dtype=float)
+
+
 def _tile_matrix_to_point_cloud(matrix, meta):
     matrix = np.asarray(matrix, dtype=float)
     if matrix.ndim != 2 or matrix.size == 0:

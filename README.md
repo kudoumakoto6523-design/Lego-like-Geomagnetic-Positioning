@@ -3,6 +3,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+> **注意**：不要跑 `route1_run1`，传感器数据与注册路线对不上（实际忘了当时测的是哪个路线了）。推荐使用 `route1_run2`、`route2_run1`。
 
 # 运行方式：
 ## Mac端：
@@ -195,7 +196,7 @@ Current block families include:
 - `weight`: `ddtw`
 - `particle_size`: `kld`
 - `resample_trigger`: `always`, `ess_or_target`
-- `resample`: `cso`
+- `resample`: `cso`, `systematic`
 
 ## Map API
 

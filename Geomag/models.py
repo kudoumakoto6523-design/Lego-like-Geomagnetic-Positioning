@@ -43,6 +43,7 @@ class PFState:
         seed: int = 42,
         weight_sigma: float = 8.0,
         map_knn_k: int = 10,
+        map_idw_power: float = 2.0,
         min_particles: int = 1000,
         max_particles: int = 100000000,
     ) -> None:
@@ -50,6 +51,7 @@ class PFState:
         self.rng = np.random.default_rng(seed)
         self.weight_sigma = float(weight_sigma)
         self.map_knn_k = max(1, int(map_knn_k))
+        self.map_idw_power = float(map_idw_power)
         self.min_particles = int(min_particles)
         self.max_particles = int(max_particles)
         self.n_particles = int(np.clip(num_particles, self.min_particles, self.max_particles))
@@ -309,7 +311,7 @@ class PFState:
         kk = max(1, min(int(kk_raw), dist2.size))
         idx = np.argpartition(dist2, kk - 1)[:kk]
         d = np.sqrt(dist2[idx]) + 1e-6
-        w = 1.0 / d
+        w = 1.0 / (d ** self.map_idw_power)
         return float(np.sum(w * pz[idx]) / np.sum(w))
 
     def adapt_particle_count_kld(self, epsilon: float = 0.12, z: float = 1.96, bin_size_xy: float = 0.8, bin_size_theta: float = 0.35) -> int:

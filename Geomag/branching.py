@@ -114,7 +114,7 @@ def build_uji_configs():
             "max_particles": 10000000000000,
         },
         motion="gaussian",
-        motion_params={"heading_noise_std": 0.01, "step_noise_std": 0.01},
+        motion_params={"heading_noise_std": 0.03, "step_noise_std": 0.03},
         weight="ddtw",
         weight_params={"sigma": 0.1, "max_hist": 100},
         particle_size="kld",
@@ -122,7 +122,7 @@ def build_uji_configs():
         resample_trigger="ess_or_target",
         resample_trigger_params={"ess_ratio_threshold": 0.40},
         resample="systematic",
-        resample_params={"inject_ratio": 0.05, "noise_scale": 0.15},
+        resample_params={"inject_ratio": 0.10, "noise_scale": 0.08},
     )
     return pdr_config, pf_config
 
@@ -139,7 +139,7 @@ def build_own_package_configs():
         step_length="weinberg",
         step_length_params={"weinberg_k": 0.45},
         heading="gyro",
-        heading_params={"dt": None},
+        heading_params={"dt": 0.01},
         mag="norm_mean",
     )
     pf_config = PFConfig(
@@ -147,17 +147,19 @@ def build_own_package_configs():
             "num_particles": 5000,
             "min_particles": 2000,
             "max_particles": 10000000000000,
+            "map_knn_k": 7,
+            "map_idw_power": 1.5,
         },
         motion="gaussian",
-        motion_params={"heading_noise_std": 0.01, "step_noise_std": 0.01},
+        motion_params={"heading_noise_std": 0.03, "step_noise_std": 0.03},
         weight="ddtw",
-        weight_params={"sigma": 0.5, "max_hist": 100},
+        weight_params={"sigma": 1.0, "max_hist": 100},
         particle_size="kld",
         particle_size_params={"epsilon": 0.10, "bin_size_xy": 0.5, "bin_size_theta": 0.35},
         resample_trigger="ess_or_target",
         resample_trigger_params={"ess_ratio_threshold": 0.40},
         resample="systematic",
-        resample_params={"inject_ratio": 0.05, "noise_scale": 0.15},
+        resample_params={"inject_ratio": 0.10, "noise_scale": 0.08},
     )
     return pdr_config, pf_config
 
@@ -177,7 +179,12 @@ def build_own_branch_configs():
         mag="norm_mean",
     )
     pf_config = PFConfig(
-        state_params={"num_particles": 5000, "min_particles": 2000},
+        state_params={
+            "num_particles": 5000,
+            "min_particles": 2000,
+            "map_knn_k": 7,
+            "map_idw_power": 1.5,
+        },
         motion="gaussian",
         motion_params={"heading_noise_std": 0.12, "step_noise_std": 0.22},
         weight="ddtw",
@@ -187,7 +194,7 @@ def build_own_branch_configs():
         resample_trigger="ess_or_target",
         resample_trigger_params={"ess_ratio_threshold": 0.40},
         resample="systematic",
-        resample_params={"inject_ratio": 0.05, "noise_scale": 0.15},
+        resample_params={"inject_ratio": 0.10, "noise_scale": 0.08},
     )
     return pdr_config, pf_config
 
@@ -256,16 +263,29 @@ def build_own_geomag_map(config: BranchConfig):
             },
         )
 
-    from data.own_data.magnetometer_map_own import data as own_map_raw
+    import importlib.util
+    _map_path = Path(__file__).resolve().parent.parent / "data" / "own_data" / "magnetometer_map_own.py"
+    _spec = importlib.util.spec_from_file_location("magnetometer_map_own", str(_map_path))
+    _map_mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_map_mod)
+    own_map_raw = _map_mod.data
 
     tile_matrix = build_own_tile_matrix(own_map_raw, mode=config.own_map_mode, rows=8, cols=12)
     rows, cols = tile_matrix.shape
     if str(config.own_map_mode).strip().lower() == "raw":
         tile_size_x_m = 11.52 / float(cols)
         tile_size_y_m = 8.80 / float(rows)
+        oversample = 1
     else:
         tile_size_x_m = 0.96
         tile_size_y_m = 1.10
+        oversample = 3
+
+    if oversample > 1:
+        from Geomag.algorithms import _bilinear_upsample
+        tile_matrix = _bilinear_upsample(tile_matrix, oversample)
+        tile_size_x_m = tile_size_x_m / float(oversample)
+        tile_size_y_m = tile_size_y_m / float(oversample)
 
     return get_map(
         source="own",
@@ -553,8 +573,11 @@ def run_own_branch(config: BranchConfig):
     pf_module = build_pf_from_config(pf_config)
 
     pf_state = PFState(init_pos=[float(route[0, 0]), float(route[0, 1])], mag_map=geomag_map, **dict(pf_config.state_params or {}))
-    pf_list = [pf_state.get_pos()]
-    pdr_list = [pf_state.get_pos()]
+    init_pos = pf_state.get_pos()
+    pf_list = [init_pos]
+    pdr_list = [init_pos]
+    pf_smooth_x, pf_smooth_y = float(init_pos[0]), float(init_pos[1])
+    EMA_ALPHA = 0.7  # 70% history, 30% new estimate → smooth trajectory
     particle_counts = [len(pf_state.particles)]
     geomag_hist = []
     sample_buffer = []
@@ -590,7 +613,9 @@ def run_own_branch(config: BranchConfig):
             heading_angle=heading_angle,
             geomag_seq=geomag_window,
         )
-        pf_list.append((float(pf_xy[0]), float(pf_xy[1])))
+        pf_smooth_x = EMA_ALPHA * pf_smooth_x + (1.0 - EMA_ALPHA) * float(pf_xy[0])
+        pf_smooth_y = EMA_ALPHA * pf_smooth_y + (1.0 - EMA_ALPHA) * float(pf_xy[1])
+        pf_list.append((pf_smooth_x, pf_smooth_y))
         particle_counts.append(len(pf_state.particles))
         sample_buffer.clear()
         _print_progress(frame_idx + 1, total_frames)
