@@ -42,9 +42,14 @@ application.  Running within a notebook or via ``panel`` is not required and
 no external dependencies beyond Bokeh itself are needed.
 """
 
+import os
+
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import logging
 import math
 import random
+import threading
 
 import numpy as np
 from bokeh.io import curdoc
@@ -152,7 +157,23 @@ class GeoMagApp:
     """Encapsulates all state and callbacks for the Bokeh application."""
 
     def __init__(self) -> None:
-        self.title_div = Div(text="<h2>Geomagnetic Positioning Simulation</h2>")
+        # Global CSS injection
+        self._style_div = Div(text="""
+        <style>
+        body { background: #f5f5f7; }
+        .bk-root { background: #f5f5f7; }
+        </style>
+        """, width=0, height=0)
+
+        self.title_div = Div(text="""
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    font-family:-apple-system,BlinkMacSystemFont,sans-serif;">
+            <span style="font-size:16px;font-weight:600;color:#1d1d1f;">
+                Geomagnetic Positioning Simulation
+            </span>
+            <span style="font-size:12px;color:#86868b;">v7 · systematic + EMA</span>
+        </div>
+        """)
 
         # Branch selection with descriptive Chinese labels
         self.branch_select = Select(
@@ -289,7 +310,7 @@ class GeoMagApp:
         self.full_result: dict | None = None
         self.current_index: int = 0
         self.plot = figure(
-            title="定位轨迹（绿=真值路线, 橙=PDR, 青=PF）",
+            title="",
             x_axis_label="X (m)",
             y_axis_label="Y (m)",
             width=650,
@@ -298,44 +319,101 @@ class GeoMagApp:
             active_scroll="wheel_zoom",
             match_aspect=True,
         )
-        self.plot.line("x", "y", source=self.route_source, line_width=2, color="green", legend_label="真值路线")
-        self.plot.line("x", "y", source=self.pdr_source, line_width=1.5, color="orange", line_dash="dashed", legend_label="PDR")
-        self.plot.line("x", "y", source=self.pf_source, line_width=2, color="cyan", legend_label="PF")
+        self.plot.line("x", "y", source=self.route_source, line_width=2, color="#34c759", legend_label="真值路线")
+        self.plot.line("x", "y", source=self.pdr_source, line_width=1.5, color="#ff9500", line_dash="dashed", legend_label="PDR")
+        self.plot.line("x", "y", source=self.pf_source, line_width=2, color="#007aff", legend_label="PF")
         self.plot.legend.location = "top_left"
+
+        # Progress indicator
+        self.progress_div = Div(text="", visible=False)
+
+        # Colored legend above plot
+        self.legend_div = Div(text="""
+        <div style="display:flex;align-items:center;gap:14px;
+                    font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin-bottom:4px;">
+            <span style="font-size:11px;font-weight:600;color:#86868b;
+                         text-transform:uppercase;letter-spacing:0.5px;">定位轨迹</span>
+            <span style="font-size:11px;font-weight:500;color:#34c759;">● 真值路线</span>
+            <span style="font-size:11px;font-weight:500;color:#ff9500;">● PDR</span>
+            <span style="font-size:11px;font-weight:500;color:#007aff;">● PF</span>
+        </div>
+        """)
+
+        # Result stats (hidden until simulation runs)
+        self.stats_div = Div(text="", visible=False)
+
+        self._sep_div = Div(text="""
+        <div style="width:1px;height:20px;background:#e8e8ed;margin:0 6px;"></div>
+        """, width=10, visible=False)
+
+        self.button_bar = row(
+            self.run_button,
+            self.step_button,
+            self._sep_div,
+            self.stats_div,
+        )
+
+        self.plot_area = column(
+            self.progress_div,
+            self.legend_div,
+            self.plot,
+            self.button_bar,
+        )
+
+        # Card helper
+        def _card(header_text, *widgets):
+            header = Div(text=f'<div style="font-size:11px;font-weight:600;color:#86868b;\
+text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;\
+font-family:-apple-system,BlinkMacSystemFont,sans-serif;">{header_text}</div>')
+            return column(header, *widgets,
+                          styles={"background": "#ffffff", "border-radius": "10px",
+                                  "padding": "12px 14px", "box-shadow": "0 1px 3px rgba(0,0,0,0.06)"},
+                          margin=(0, 0, 10, 0))
 
         # Layout definition
         controls_col1 = column(
-            self.branch_select,
-            self.window_size,
-            self.max_frames,
-            self.use_explicit_heading,
-            self.own_initial_heading,
-            self.no_route_initial_heading,
-            self.mirror_y,
-            self.heading_offset,
-            self.trim_head,
-            self.trim_tail,
-            width=300,
+            _card("仿真控制",
+                self.branch_select,
+                self.window_size,
+                self.max_frames,
+            ),
+            _card("航向设置",
+                self.use_explicit_heading,
+                self.own_initial_heading,
+                self.no_route_initial_heading,
+                self.mirror_y,
+                self.heading_offset,
+            ),
+            _card("地图与裁剪",
+                self.own_map_mode,
+                self.trim_head,
+                self.trim_tail,
+            ),
+            width=240,
         )
         controls_col2 = column(
-            self.uji_input,
-            self.uji_test_file,
-            self.uji_data_root,
-            self.own_input,
-            self.own_profile,
-            self.own_dataset_key,
-            self.own_data_dir,
-            self.own_map_mode,
-            self.own_map_npz,
-            self.own_route,
-            self.file_input,
-            self.run_button,
-            self.step_button,
-            width=350,
+            _card("数据集",
+                self.own_input,
+                self.own_profile,
+                self.own_dataset_key,
+                self.own_data_dir,
+            ),
+            _card("UJI 设置",
+                self.uji_input,
+                self.uji_test_file,
+                self.uji_data_root,
+            ),
+            _card("其他",
+                self.own_map_npz,
+                self.own_route,
+                self.file_input,
+            ),
+            width=240,
         )
         self.layout = column(
+            self._style_div,
             self.title_div,
-            row(controls_col1, controls_col2, self.plot),
+            row(controls_col1, controls_col2, self.plot_area),
         )
 
     def _update_title(self, attr: str, old: str, new: str) -> None:
@@ -381,34 +459,89 @@ class GeoMagApp:
             print(f"Uploaded file: {filename}")
 
     def _on_run(self) -> None:
-        """Callback for the Run Simulation button."""
+        """Callback for the Run Simulation button (runs in background thread)."""
         self.current_index = 0
-        result = run_simulation(self._collect_params())
-        if result is None:
-            self.title_div.text = "<h2 style='color:red'>仿真失败：未知错误</h2>"
-            return
-        if "error" in result:
-            hint = result.get("hint", "")
-            self.title_div.text = f"<h2 style='color:red'>错误：{result['error']}</h2><p>{hint}</p>"
-            return
+        self.run_button.disabled = True
+        self.step_button.disabled = True
+        self.stats_div.visible = False
+        self._sep_div.visible = False
+        self.progress_div.text = """
+        <div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+                    font-size:13px;color:#0071e3;padding:8px 0;">
+            ⏳ 运行中，请稍候...
+        </div>
+        """
+        self.progress_div.visible = True
 
-        self.full_result = result
-        # Show full route and PDR immediately as reference
-        route = np.asarray(result.get("route_xy_m", []), dtype=float)
-        pdr = np.asarray(result.get("pdr_track", []), dtype=float)
-        pf = np.asarray(result.get("pf_track", []), dtype=float)
-        if route.ndim == 2 and route.shape[1] >= 2:
-            self.route_source.data = {"x": route[:, 0], "y": route[:, 1]}
-        if pdr.ndim == 2 and pdr.shape[1] >= 2:
-            self.pdr_source.data = {"x": pdr[:, 0], "y": pdr[:, 1]}
-        # Initially show first PF point
-        if pf.ndim == 2 and pf.shape[1] >= 2:
-            self.pf_source.data = {"x": pf[:1, 0], "y": pf[:1, 1]}
-            self.current_index = 1
-            self.step_button.disabled = False
-        else:
-            self.pf_source.data = {"x": [], "y": []}
-            self.step_button.disabled = True
+        params = self._collect_params()
+        result_holder = {}
+
+        def _run():
+            result_holder["value"] = run_simulation(params)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        def _check_done():
+            if thread.is_alive():
+                curdoc().add_next_tick_callback(_check_done)
+                return
+            # Thread finished — populate results
+            self.progress_div.visible = False
+            self.run_button.disabled = False
+            result = result_holder.get("value")
+
+            if result is None:
+                self.title_div.text = "<h2 style='color:red'>仿真失败：未知错误</h2>"
+                return
+            if "error" in result:
+                hint = result.get("hint", "")
+                self.title_div.text = f"<h2 style='color:red'>错误：{result['error']}</h2><p>{hint}</p>"
+                return
+
+            self.full_result = result
+            route = np.asarray(result.get("route_xy_m", []), dtype=float)
+            pdr = np.asarray(result.get("pdr_track", []), dtype=float)
+            pf = np.asarray(result.get("pf_track", []), dtype=float)
+            if route.ndim == 2 and route.shape[1] >= 2:
+                self.route_source.data = {"x": route[:, 0], "y": route[:, 1]}
+            if pdr.ndim == 2 and pdr.shape[1] >= 2:
+                self.pdr_source.data = {"x": pdr[:, 0], "y": pdr[:, 1]}
+            if pf.ndim == 2 and pf.shape[1] >= 2:
+                self.pf_source.data = {"x": pf[:1, 0], "y": pf[:1, 1]}
+                self.current_index = 1
+                self.step_button.disabled = False
+            else:
+                self.pf_source.data = {"x": [], "y": []}
+                self.step_button.disabled = True
+
+            if "pf_error_stats" in result:
+                ps = result["pf_error_stats"]
+                ds = result["pdr_error_stats"]
+                steps = result.get("steps_detected", 0)
+                self.stats_div.text = f"""
+                <div style="display:flex;align-items:center;gap:14px;
+                            font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:11px;">
+                    <span><span style="color:#86868b;">PF 平均</span>
+                          <span style="font-weight:600;color:#007aff;font-size:14px;">
+                          {ps['mean']:.2f}m</span></span>
+                    <span><span style="color:#86868b;">最终</span>
+                          <span style="font-weight:600;font-size:14px;">
+                          {ps['final']:.2f}m</span></span>
+                    <span><span style="color:#86868b;">P95</span>
+                          <span style="font-weight:600;font-size:14px;">
+                          {ps['p95']:.2f}m</span></span>
+                    <span><span style="color:#86868b;">步数</span>
+                          <span style="font-weight:600;font-size:14px;">{steps}</span></span>
+                    <span><span style="color:#86868b;">PDR</span>
+                          <span style="font-weight:600;font-size:14px;">
+                          {ds['mean']:.2f}m</span></span>
+                </div>
+                """
+                self.stats_div.visible = True
+                self._sep_div.visible = True
+
+        curdoc().add_next_tick_callback(_check_done)
 
     def _on_step(self) -> None:
         """Advance the trajectory one step and update the plot."""
