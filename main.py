@@ -12,7 +12,7 @@ from Geomag.branching import (
 # Change these variables for the usual workflow.
 branch = "own"  # "uji" or "own"
 uji = "2"  # "tt01"..."tt11", "1"..."11", "tt02.txt", or a raw test-file path.
-own = "route1_run2"  # "route1_run1", "route1_run2", "route2_run1", "own_branch", or a raw data/own_data directory.
+own = "route1_run2"  # "route1_run2", "route2_run1", "own_branch", or a raw data/own_data directory.
 
 
 def build_config_from_args(args):

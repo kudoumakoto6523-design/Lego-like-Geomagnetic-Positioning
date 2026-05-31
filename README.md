@@ -3,14 +3,14 @@
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-
+# 跑的时候不要跑 'route1_run1', 因为数与路线对不上（实际忘了当时测的是哪个路线了）
 # 运行方式：
 ## Mac端：
 ```bash
 bash run.sh
 ```
 
-## Windows 端：
+## Windows 端(目前有点不好使)：
 
 直接运行 `run.bat`
 # First of All

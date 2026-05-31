@@ -4,22 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="47dcb94b-da96-48e1-90fa-537fc3bc1cd7" name="更改" comment="">
-      <change afterPath="$PROJECT_DIR$/geomag_web_app.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/run.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Geomag/branching.py" beforeDir="false" afterPath="$PROJECT_DIR$/Geomag/branching.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/geomagnetic_positioning_ddtw.egg-info/SOURCES.txt" beforeDir="false" afterPath="$PROJECT_DIR$/geomagnetic_positioning_ddtw.egg-info/SOURCES.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/magnetometer_map_own.py" beforeDir="false" afterPath="$PROJECT_DIR$/data/own_data/magnetometer_map_own.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_get_map_temp.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_get_map_temp.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_get_sensor_and_len.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_get_sensor_and_len.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_get_true_route.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_get_true_route.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_multi_methods.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_multi_methods.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_own_data_package_demo.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_own_data_package_demo.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_own_simulation.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_own_simulation.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/temp_test.py" beforeDir="false" />
-    </list>
+    <list default="true" id="47dcb94b-da96-48e1-90fa-537fc3bc1cd7" name="更改" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -157,7 +142,7 @@
       <workItem from="1778571646217" duration="3200000" />
       <workItem from="1778746568272" duration="1333000" />
       <workItem from="1779086070919" duration="6752000" />
-      <workItem from="1779093420154" duration="3831000" />
+      <workItem from="1779093420154" duration="4212000" />
     </task>
     <servers />
   </component>
