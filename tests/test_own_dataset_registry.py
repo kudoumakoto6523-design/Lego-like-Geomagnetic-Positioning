@@ -1,5 +1,7 @@
 import math
+from pathlib import Path
 
+import numpy as np
 import pytest
 
 from Geomag.branching import (
@@ -50,8 +52,10 @@ def test_route2_run2_is_confirmed_primary_independent_capture():
     assert spec["evaluation_tier"] == "confirmed"
     assert spec["evaluation_role"] == "primary"
     assert spec["route_confirmation"]["independent_capture"] is True
-    assert spec["dataset_dir"].endswith(
-        "data/own_data/Geomagnetic Navigation 2026-03-19 20-10-45"
+    assert Path(spec["dataset_dir"]).parts[-3:] == (
+        "data",
+        "own_data",
+        "Geomagnetic Navigation 2026-03-19 20-10-45",
     )
 
 
@@ -101,16 +105,28 @@ def test_tile_map_profile_applies_explicit_registration_offset():
     assert geomag_map["rangey_min"] == pytest.approx(-0.40)
 
 
-def test_survey_vector_map_attaches_with_physical_axis_order():
+def test_survey_vector_map_attaches_with_physical_axis_order(tmp_path):
+    line_vectors = np.arange(8 * 5 * 3, dtype=float).reshape(8, 5, 3)
+    vector_map_path = tmp_path / "own_vector_map.npz"
+    np.savez_compressed(
+        vector_map_path,
+        line_vectors=line_vectors,
+        x_line_positions_m=np.linspace(0.0, 6.72, 8),
+        y_sample_positions_m=np.linspace(0.0, 8.074005934718102, 5),
+    )
     geomag_map = build_own_geomag_map(
         BranchConfig(
             own_profile="package",
             own_map_profile="survey_kriging",
             own_vector_map_enabled=True,
+            own_vector_map_path=str(vector_map_path),
         )
     )
 
-    assert geomag_map["vector_grid"].shape == (1348, 8, 3)
+    assert geomag_map["vector_grid"].shape == (5, 8, 3)
+    assert geomag_map["vector_grid"][2, 3] == pytest.approx(
+        line_vectors[3, 2]
+    )
     assert geomag_map["vector_grid_meta"]["flip_y"] is False
     assert geomag_map["vector_grid_meta"]["spacing_x_m"] == pytest.approx(0.96)
 
