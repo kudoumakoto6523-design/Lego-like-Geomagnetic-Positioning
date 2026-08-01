@@ -46,6 +46,11 @@ dev = [
 [project.scripts]
 geomag = "main:main"
 geomag-web = "geomag_web_app:main"
+geomag-data-audit = "Geomag.data_quality:main"
+geomag-batch = "Geomag.batch_evaluation:main"
+geomag-route-audit = "Geomag.route_identity:main"
+geomag-vector-map = "Geomag.vector_map:main"
+geomag-step-calibration = "Geomag.step_calibration:main"
 
 [project.urls]
 Homepage = "https://github.com/tianhs6523/Lego-like-Geomagnetic-Positioning"

@@ -137,6 +137,89 @@ class TestPFStateMapMagnitude:
         mag = pf_state.map_magnitude(0.0, 0.0)
         assert 40.0 <= mag <= 50.0  # map point at (0,0) has z=45.0
 
+    def test_regular_own_grid_uses_bilinear_interpolation(self):
+        mag_map = {
+            "source": "own",
+            "grid_array": np.asarray([[0.0, 10.0], [20.0, 30.0]]),
+            "map_points": np.asarray(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 10.0], [0.0, 1.0, 20.0], [1.0, 1.0, 30.0]]
+            ),
+            "grid_map_contract": {
+                "meta": {
+                    "origin_xy_m": [0.0, 0.0],
+                    "tile_size_x_m": 1.0,
+                    "tile_size_y_m": 1.0,
+                    "anchor": "corner",
+                    "flip_y": False,
+                }
+            },
+            "rangex_min": 0.0,
+            "rangex_max": 1.0,
+            "rangey_min": 0.0,
+            "rangey_max": 1.0,
+        }
+        state = PFState(
+            init_pos=[0.5, 0.5],
+            mag_map=mag_map,
+            num_particles=1,
+            min_particles=1,
+            max_particles=1,
+            init_position_std=0.0,
+        )
+
+        assert state.map_magnitude(0.5, 0.5) == pytest.approx(15.0)
+
+
+class TestPFStateMapVector:
+    def test_regular_vector_grid_uses_bilinear_interpolation(self):
+        mag_map = {
+            "source": "own",
+            "grid_array": np.asarray([[40.0, 40.0], [40.0, 40.0]]),
+            "map_points": np.asarray(
+                [[0.0, 0.0, 40.0], [1.0, 0.0, 40.0],
+                 [0.0, 1.0, 40.0], [1.0, 1.0, 40.0]]
+            ),
+            "grid_map_contract": {
+                "meta": {
+                    "origin_xy_m": [0.0, 0.0],
+                    "tile_size_x_m": 1.0,
+                    "tile_size_y_m": 1.0,
+                    "anchor": "corner",
+                    "flip_y": False,
+                }
+            },
+            "vector_grid": np.asarray(
+                [
+                    [[0.0, 0.0, 0.0], [2.0, 0.0, 2.0]],
+                    [[0.0, 2.0, 2.0], [2.0, 2.0, 4.0]],
+                ]
+            ),
+            "vector_grid_meta": {
+                "origin_xy_m": [0.0, 0.0],
+                "spacing_x_m": 1.0,
+                "spacing_y_m": 1.0,
+                "anchor": "corner",
+                "flip_y": False,
+            },
+            "rangex_min": 0.0,
+            "rangex_max": 1.0,
+            "rangey_min": 0.0,
+            "rangey_max": 1.0,
+        }
+        state = PFState(
+            init_pos=[0.5, 0.5],
+            mag_map=mag_map,
+            num_particles=1,
+            min_particles=1,
+            max_particles=1,
+            init_position_std=0.0,
+        )
+
+        assert state.map_vector(0.5, 0.5) == pytest.approx(
+            np.asarray([1.0, 1.0, 2.0])
+        )
+        assert np.all(np.isnan(state.map_vector(5.0, 5.0)))
+
 
 class TestPFStateEffectiveSampleSize:
     def test_uniform_weights(self, pf_state):
@@ -189,6 +272,33 @@ class TestPFStateCSOResample:
         for p in pf_state.particles:
             assert pf_state.in_strict_map_bounds(p.x, p.y), \
                 f"resampled particle ({p.x:.2f}, {p.y:.2f}) out of bounds"
+
+
+class TestPFStateSystematicResample:
+    def test_zero_injection_ratio_is_supported(self, pf_state):
+        original_history = [41.0, 42.0]
+        expected_count = len(pf_state.particles)
+        for particle in pf_state.particles:
+            particle.mag_hist = list(original_history)
+
+        pf_state.systematic_resample(
+            target_count=len(pf_state.particles),
+            inject_ratio=0.0,
+            noise_scale=0.0,
+        )
+
+        assert len(pf_state.particles) == expected_count
+        assert all(p.mag_hist == original_history for p in pf_state.particles)
+
+    def test_full_injection_ratio_does_not_divide_by_zero(self, pf_state):
+        pf_state.systematic_resample(
+            target_count=len(pf_state.particles),
+            inject_ratio=1.0,
+            noise_scale=0.0,
+        )
+
+        assert len(pf_state.particles) >= pf_state.min_particles
+        assert sum(p.weight for p in pf_state.particles) == pytest.approx(1.0)
 
 
 class TestPFStateSpawn:

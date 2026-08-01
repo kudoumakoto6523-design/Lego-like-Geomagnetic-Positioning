@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-> **注意**：不要跑 `route1_run1`，传感器数据与注册路线对不上（实际忘了当时测的是哪个路线了）。推荐使用 `route1_run2`、`route2_run1`。
+> **注意**：不要跑 `route1_run1`，传感器数据与注册路线对不上（实际忘了当时测的是哪个路线了）。默认正式评测使用 `route1_run2`、`route2_run2`；`route2_run1` 保留为可单独运行的重复采集。
 
 # 运行方式：
 ## Mac端：
@@ -46,6 +46,221 @@ This project is under active restructuring.
 - UJI map building and visualization are implemented.
 - Some algorithm hooks are still placeholders or baseline implementations.
 - End-to-end accuracy is still being improved.
+
+### Own-data baseline
+
+The default own-data profile now applies a 0.40 s step cooldown, continuous
+timestamp-based gyro integration, a trainable adaptive step model, online
+gyroscope bias estimation, particle-level step-scale/heading-bias estimation,
+turn-aware noise, a tighter known-start prior, and bilinear lookup on the
+regular magnetic grid. On the two manifest-selected primary captures:
+
+| Dataset | PF mean / P95 | Cross-track mean | Endpoint |
+|---|---:|---:|---:|
+| `route1_run2` | 1.141 m / 1.923 m | 0.335 m | 0.664 m |
+| `route2_run2` | 0.893 m / 1.535 m | 0.413 m | 1.185 m |
+
+These figures use the registered route geometry and align each detected step
+with the fraction of the automatically detected active walking interval. This
+matches the controlled constant-speed acquisition protocol while excluding
+recording time before the first step or after the last step. They are useful
+regression metrics, not centimeter-accurate ground truth.
+
+Use the legacy full-recording alignment for comparison:
+
+```bash
+python main.py --own route1_run2 --own-alignment-mode capture_time --no-show
+```
+
+A stateful quaternion attitude estimator is also available for ablation. It
+propagates the full three-axis gyroscope, constrains roll/pitch with gravity,
+requires consecutive stationary evidence before estimating three-axis bias,
+and optionally applies norm/direction-gated magnetic yaw correction:
+
+```bash
+python main.py --own route1_run2 --own-heading-method quaternion --no-show
+python main.py --own route1_run2 --own-heading-method quaternion \
+  --own-quaternion-use-magnetometer --no-show
+```
+
+It is not the default. On the legacy captures, quaternion gravity fusion
+worsens `route1_run2` and does not recover the missing 90-degree yaw in
+`route2_run1`; magnetic correction is also unreliable in the indoor field.
+The gyro baseline remains the honest default until captures with verified
+stationary calibration are available.
+
+Own-data plots now distinguish the raw PF estimate (magenta) from its causal
+EMA output (cyan). A second diagnostics image contains heading, step length,
+ESS, posterior step scale/heading bias, and magnetic residual histories.
+The selected captures use a low-lag EMA history weight of `0.30`. The previous
+`0.70` setting over-smoothed the shorter `route2_run2`: reducing it lowers the
+selected-pair aligned mean from `1.181` to `1.017 m` and endpoint mean from
+`1.046` to `0.925 m`, while cross-track mean increases from `0.319` to
+`0.374 m`. The strong EMA's unusually small `route1_run2` endpoint error was
+partly a closed-loop artefact: on the return to the start area, lag pulled the
+reported endpoint toward earlier positions. The lower weight is a more honest
+real-time default. Smoothing can be disabled to inspect the filter directly:
+
+```bash
+python main.py --own route1_run2 --own-pf-smoothing-alpha 0 --no-show
+```
+
+The motion-prediction residual smoother is also available with
+`--own-pf-smoothing-mode motion_adaptive`, but it remains experimental. It
+improves `route2_run2` while making `route1_run2` worse and increasing the
+selected pair's average cross-track error, so the causal EMA remains the
+default.
+
+Captures made with the phone facing forward while walking on orthogonal tile
+seams can enable a 90-degree Manhattan heading prior:
+
+```bash
+python main.py --own route2_run1 --own-heading-snap-deg 90 --no-show
+```
+
+This is intentionally opt-in. Its hysteretic turn detector reduces
+`route2_run1` smoothed aligned mean from 0.772 m to 0.691 m and cross-track
+mean from 0.426 m to 0.073 m; the raw PF aligned mean becomes 0.217 m.
+It still worsens the endpoint on `route1_run2`, where the final segment is
+estimated as 6.21 m instead of 3.84 m. Enabling it globally would hide a
+step/turn-timing calibration problem.
+
+The adaptive step model exposes cadence and acceleration-variability
+coefficients, but both remain zero until they can be fitted on separate
+calibration captures:
+
+```bash
+python main.py --own route2_run1 \
+  --own-step-weinberg-k 0.31 \
+  --own-step-cadence-weight 0.0 \
+  --own-step-variability-weight 0.0 \
+  --no-show
+```
+
+Use `--no-own-pf-joint-calibration` for an ablation without per-particle
+`step_scale` and `heading_bias`.
+
+Walking speed changes the personalized Weinberg coefficient. Calibrate the
+step scale on a separate straight, known-distance walk, then apply it to later
+captures:
+
+```bash
+python -m Geomag.step_calibration \
+  results/calibration_walk.json --known-distance-m 10 \
+  --output-json results/step_calibration.json
+
+python main.py --own route2_run2 \
+  --own-step-length-scale 1.12 --no-show
+```
+
+Do not estimate the scale from the same route used for evaluation. Doing that
+on `route2_run2` gives an oracle scale of `1.2685` and improves mean /
+cross-track / endpoint errors from `0.893 / 0.413 / 1.185 m` to
+`0.327 / 0.145 / 0.223 m`, but those values are only an upper-bound diagnosis
+because the known route length was leaked into the estimator.
+
+An independent known-turn capture can likewise calibrate the gyroscope rate
+scale. `route1_run2` integrates to `-284.503°` around device Z for a registered
+`-270°` route, giving `270 / 284.503 = 0.9490`. Applying that frozen value only
+to `route2_run2` improves aligned / cross-track / endpoint error from
+`0.893 / 0.413 / 1.185 m` to `0.861 / 0.384 / 1.060 m`:
+
+```bash
+python main.py --own route2_run2 \
+  --own-gyro-rate-scale 0.9490245178 --no-show
+```
+
+For a repeatedly surveyed route, an experimental causal progress matcher can
+use a prior independent run as a three-axis magnetic-change template:
+
+```bash
+python -m Geomag.batch_evaluation route2_run1 \
+  --output-dir results/route2_run1_progress_template --no-plots
+
+python main.py --own route2_run2 \
+  --own-gyro-rate-scale 0.9490245178 \
+  --own-progress-template-json \
+    results/route2_run1_progress_template/route2_run1.json \
+  --own-progress-correction-gain 0.30 --no-show
+```
+
+That exploratory combination reaches `0.837 / 0.380 / 0.819 m`, but the
+matcher and gain were developed while inspecting `route2_run2`. It is disabled
+by default and needs a third independent repeat before it can be reported as a
+held-out improvement. It also applies only to a previously surveyed route, not
+arbitrary indoor walking.
+
+Map translation can be tested with `--own-map-offset-x-m` and
+`--own-map-offset-y-m`. The route1-selected magnetic-shape offset worsened the
+held-out route2 result, so the registered default remains `(0, 0)`.
+
+The hybrid DDTW + absolute-level + gradient likelihood is implemented in
+`DDTWWeight`, but remains opt-in: ablation on the current map reduced some final
+errors while worsening mean error, so shape-only DDTW remains the default.
+See [`docs/2026-07-29-own-data-improvement-report.md`](docs/2026-07-29-own-data-improvement-report.md)
+for the full ablation and evaluation notes.
+
+Before comparing algorithm changes, audit the acquisition quality and run the
+same configuration over every enabled own-data capture:
+
+```bash
+python -m Geomag.data_quality
+python -m Geomag.batch_evaluation
+```
+
+The operator confirmed that `route2_run2` is an independent second capture of
+the same route as `route2_run1`. The manifest-selected default evaluation now
+uses `route1_run2` and `route2_run2`; `route2_run1` remains runnable as a
+separate repeat:
+
+```bash
+python -m Geomag.route_identity
+python -m Geomag.batch_evaluation --no-plots
+python -m Geomag.batch_evaluation route2_run1 --no-plots
+```
+
+Own-map geometry is explicit. Compare the measured survey grid and the
+tile-coordinate interpretation independently:
+
+```bash
+python -m Geomag.batch_evaluation \
+  --map-profile survey_kriging --output-dir results/map_profile_survey --no-plots
+python -m Geomag.batch_evaluation \
+  --map-profile tile_manifest --output-dir results/map_profile_tiles --no-plots
+```
+
+The original eight magnetometer-only survey archives can now be reconstructed
+as a three-axis map and used as a yaw-aligned, anomaly-gated PF likelihood:
+
+```bash
+python -m Geomag.vector_map
+python -m Geomag.batch_evaluation \
+  --map-profile survey_kriging --vector-map \
+  --vector-weight 0.10 --output-dir results/vector_survey_w010 --no-plots
+```
+
+This option is deliberately disabled by default. The survey archives contain
+no synchronized phone attitude, so the run calibrates one relative yaw offset
+at its first valid step. Later updates use horizontal magnetic direction only;
+norm or direction anomalies fall back to scalar DDTW. With weight `0.10`, the
+selected survey-profile aligned means change from `1.270 / 0.895 m` to
+`1.212 / 0.901 m` for `route1_run2 / route2_run2`. Aggregate cross-track error
+improves from `0.400` to `0.384 m`, while aggregate endpoint error changes from
+`1.065` to `1.085 m`;
+this is useful evidence, not yet a production default.
+
+Passing dataset keys explicitly always overrides the manifest-selected default.
+`--all-evaluable` runs every evaluable capture, including the secondary
+`route2_run1` repeat. The older `--include-provisional` spelling remains an
+alias.
+
+The audit checks required files, timestamps, stream overlap, sample gaps,
+start/end stationary windows, route duration, and device-Z yaw consistency.
+It also blocks the known-invalid `route1_run1`. New captures should use
+[`data/own_data_package/capture_metadata.template.json`](data/own_data_package/capture_metadata.template.json)
+and record synchronized turn events. These metadata requirements also support
+arbitrary real routes; the 90-degree tile route remains an optional controlled
+test rather than a production assumption.
 
 If you are interested in contributing ideas, code, experiments, or criticism, contributions are welcome.
 
@@ -189,7 +404,7 @@ print(Experiment.describe_api())
 Current block families include:
 
 - `step_judge`: `autocorr`, `frequency_fft`, `peak_dynamic`, `peak_fixed`, `valley_peak`, `zero_crossing`
-- `step_length`: `fixed`, `weinberg`
+- `step_length`: `adaptive`, `fixed`, `weinberg`
 - `heading`: `gyro`, `q_fused`, `tilt_compass`
 - `mag`: `norm_last`, `norm_mean`
 - `motion`: `gaussian`
