@@ -226,6 +226,13 @@ class GaussianMotion(MotionBlock):
             if previous_heading is None
             else _wrap_angle_pi(float(heading_angle) - float(previous_heading))
         )
+        override = getattr(pf_state, "motion_heading_delta_override", None)
+        applied_heading_delta = (
+            float(heading_delta) if override is None else float(override)
+        )
+        relative_heading_mode = bool(
+            getattr(pf_state, "heading_recovery_mode", False)
+        )
         is_turning = bool(abs(heading_delta) >= self.turn_threshold_rad)
         heading_noise_std = (
             self.turn_heading_noise_std if is_turning else self.heading_noise_std
@@ -257,11 +264,18 @@ class GaussianMotion(MotionBlock):
                     else 0.0
                 )
             )
-            theta = _wrap_angle_pi(
-                float(heading_angle)
-                + float(p.heading_bias)
-                + float(rng.normal(0.0, heading_noise_std))
-            )
+            if relative_heading_mode:
+                theta = _wrap_angle_pi(
+                    float(p.theta)
+                    + applied_heading_delta
+                    + float(rng.normal(0.0, heading_noise_std))
+                )
+            else:
+                theta = _wrap_angle_pi(
+                    float(heading_angle)
+                    + float(p.heading_bias)
+                    + float(rng.normal(0.0, heading_noise_std))
+                )
             dist = max(
                 0.0,
                 float(step_len) * float(p.step_scale)
@@ -281,6 +295,8 @@ class GaussianMotion(MotionBlock):
         pf_state.last_motion_diagnostics = {
             "heading_delta_rad": float(heading_delta),
             "heading_delta_deg": float(math.degrees(heading_delta)),
+            "applied_heading_delta_rad": float(applied_heading_delta),
+            "relative_heading_mode": relative_heading_mode,
             "is_turning": bool(is_turning),
             "heading_noise_std": float(heading_noise_std),
             "step_scale_mean": float(
@@ -576,6 +592,31 @@ class DDTWWeight(WeightBlock):
                 p.weight = float(max(1e-12, prior_weight * weight))
         pf_state._normalize_weights()
         particle_count = max(1, len(pf_state.particles))
+        posterior_weights = np.asarray(
+            [max(float(p.weight), 0.0) for p in pf_state.particles],
+            dtype=float,
+        )
+        posterior_total = float(np.sum(posterior_weights))
+        if posterior_total > 1e-12:
+            posterior_weights /= posterior_total
+        else:
+            posterior_weights.fill(1.0 / particle_count)
+        positive_weights = posterior_weights[posterior_weights > 0.0]
+        entropy = float(
+            -np.sum(positive_weights * np.log(positive_weights))
+        )
+        entropy_ratio = (
+            entropy / math.log(particle_count)
+            if particle_count > 1
+            else 0.0
+        )
+        top_count = max(1, int(math.ceil(0.10 * particle_count)))
+        top_mass_10pct = float(
+            np.sum(np.partition(posterior_weights, -top_count)[-top_count:])
+        )
+        information_score = float(
+            np.clip((top_mass_10pct - 0.10) / 0.35, 0.0, 1.0)
+        )
         posterior_step_scale = float(
             sum(
                 float(p.weight) * float(getattr(p, "step_scale", 1.0))
@@ -605,6 +646,9 @@ class DDTWWeight(WeightBlock):
             ),
             "likelihood_mean": float(np.mean(likelihoods)) if likelihoods else 0.0,
             "ess_ratio": float(pf_state.effective_sample_size()) / float(particle_count),
+            "weight_entropy_ratio": float(np.clip(entropy_ratio, 0.0, 1.0)),
+            "top_weight_mass_10pct": top_mass_10pct,
+            "information_score": information_score,
             "history_length": int(min(obs.size, self.max_hist)),
             "posterior_step_scale": posterior_step_scale,
             "posterior_heading_bias_deg": float(

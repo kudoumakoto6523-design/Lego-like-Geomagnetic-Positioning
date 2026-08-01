@@ -17,7 +17,7 @@ from Geomag.algorithms import (
     get_test_len,
     get_true_route,
 )
-from Geomag.models import PFState
+from Geomag.models import LocalizationHealthMonitor, PFState
 from Geomag.own_dataset_registry import (
     assert_own_dataset_evaluable,
     available_own_dataset_keys,
@@ -43,6 +43,7 @@ class BranchConfig:
 
     # Own-data branch.
     own_profile: str = "own_branch"
+    own_data_source: str = "auto"
     own_dataset_key: str = "route1_run2"
     own_data_dir: str = "data/own_data/Geomagnetic Navigation 2026-03-19 20-10-45"
     own_map_mode: str = "raw"
@@ -78,10 +79,162 @@ class BranchConfig:
     own_step_cadence_weight: float = 0.0
     own_step_variability_weight: float = 0.0
     own_pf_joint_calibration: bool = True
+    own_pf_recovery_enabled: bool = True
+    own_pf_warning_streak: int = 2
+    own_pf_expand_streak: int = 4
+    own_pf_reinitialize_streak: int = 7
+    own_initial_anchor_tolerance_m: float = 1.0
+    own_gyro_heading_window_steps: int = 5
+    own_gyro_heading_fault_threshold_deg: float = 110.0
+    own_gyro_heading_clear_threshold_deg: float = 15.0
+    own_gyro_heading_clear_streak: int = 3
+    # Development-only fault injection. Normal positioning leaves this unset.
+    # Supported kinds are magnetic_bias, magnetic_noise, magnetic_dropout,
+    # gyro_bias, and initial_position_offset.
+    own_fault_injection: dict[str, Any] | None = None
 
 
 DEFAULT_UJI_DATA_ROOT = "data/raw"
 DEFAULT_OWN_BRANCH_DATA_DIR = "data/own_data/Geomagnetic Navigation 2026-03-19 20-10-45"
+
+
+_OWN_FAULT_KINDS = {
+    "magnetic_bias",
+    "magnetic_noise",
+    "magnetic_dropout",
+    "gyro_bias",
+    "initial_position_offset",
+}
+
+
+def prepare_own_fault_injection(spec, total_frames):
+    """Validate a development fault specification and resolve its frame window."""
+    if not spec:
+        return None
+    fault = dict(spec)
+    kind = str(fault.get("kind", "")).strip().lower()
+    if kind not in _OWN_FAULT_KINDS:
+        raise ValueError(
+            f"Unsupported own fault kind: {kind!r}. "
+            f"Use one of {sorted(_OWN_FAULT_KINDS)}."
+        )
+    start_fraction = float(fault.get("start_fraction", 0.30))
+    end_fraction = float(fault.get("end_fraction", 0.55))
+    if not 0.0 <= start_fraction < end_fraction <= 1.0:
+        raise ValueError(
+            "Fault start_fraction and end_fraction must satisfy "
+            "0 <= start < end <= 1."
+        )
+    frame_count = max(1, int(total_frames))
+    start_frame = min(frame_count - 1, int(math.floor(start_fraction * frame_count)))
+    end_frame = min(
+        frame_count,
+        max(start_frame + 1, int(math.ceil(end_fraction * frame_count))),
+    )
+    default_magnitudes = {
+        "magnetic_bias": 30.0,
+        "magnetic_noise": 22.0,
+        "magnetic_dropout": 0.0,
+        "gyro_bias": 0.90,
+        "initial_position_offset": 2.0,
+    }
+    return {
+        "name": str(fault.get("name", kind)),
+        "kind": kind,
+        "start_fraction": start_fraction,
+        "end_fraction": end_fraction,
+        "start_frame": int(start_frame),
+        "end_frame_exclusive": int(end_frame),
+        "magnitude": float(
+            fault.get("magnitude", default_magnitudes[kind])
+        ),
+        "seed": int(fault.get("seed", 20260801)),
+        "affected_sensor_frames": int(end_frame - start_frame),
+    }
+
+
+def apply_own_sensor_fault(mag, acc, gyro, frame_idx, fault, rng):
+    """Return copied sensor vectors with a deterministic validation fault."""
+    mag_out = np.asarray(mag, dtype=float).copy()
+    acc_out = np.asarray(acc, dtype=float).copy()
+    gyro_out = np.asarray(gyro, dtype=float).copy()
+    if not fault or fault["kind"] == "initial_position_offset":
+        return mag_out, acc_out, gyro_out, False
+    active = fault["start_frame"] <= int(frame_idx) < fault["end_frame_exclusive"]
+    if not active:
+        return mag_out, acc_out, gyro_out, False
+
+    magnitude = float(fault["magnitude"])
+    kind = fault["kind"]
+    if kind == "magnetic_bias":
+        mag_out[:3] += magnitude * np.asarray([1.0, -0.55, 0.30])
+    elif kind == "magnetic_noise":
+        mag_out[:3] += rng.normal(0.0, magnitude, size=3)
+    elif kind == "magnetic_dropout":
+        # A zero vector models an unavailable/invalid magnetometer sample
+        # without introducing NaNs into the established numerical pipeline.
+        mag_out[:3] = 0.0
+    elif kind == "gyro_bias":
+        gyro_out[2] += magnitude
+    return mag_out, acc_out, gyro_out, True
+
+
+def update_heading_integrity(
+    heading_delta_history,
+    *,
+    fault_active=False,
+    clear_streak=0,
+    window_steps=5,
+    fault_threshold_deg=110.0,
+    clear_threshold_deg=15.0,
+    required_clear_streak=3,
+):
+    """Detect implausible sustained yaw while preserving ordinary 90° turns."""
+    window = max(2, int(window_steps))
+    recent = list(heading_delta_history)[-window:]
+    net_delta = float(sum(float(value) for value in recent))
+    direction = 1.0 if net_delta >= 0.0 else -1.0
+    same_direction = [
+        float(value) for value in recent if direction * float(value) > 0.0
+    ]
+    estimated_bias_delta = (
+        float(np.median(np.asarray(same_direction, dtype=float)))
+        if same_direction
+        else 0.0
+    )
+    enough_history = len(recent) >= window
+    started = bool(
+        not fault_active
+        and enough_history
+        and abs(math.degrees(net_delta)) > float(fault_threshold_deg)
+    )
+    active = bool(fault_active or started)
+    current_clear_streak = int(clear_streak)
+    if active:
+        short_window = list(heading_delta_history)[-3:]
+        short_max_delta_deg = max(
+            (abs(math.degrees(value)) for value in short_window),
+            default=math.inf,
+        )
+        if len(short_window) >= 3 and short_max_delta_deg < float(
+            clear_threshold_deg
+        ):
+            current_clear_streak += 1
+        else:
+            current_clear_streak = 0
+        if current_clear_streak >= max(1, int(required_clear_streak)):
+            active = False
+            current_clear_streak = 0
+    return {
+        "fault_active": active,
+        "fault_started": started,
+        "clear_streak": current_clear_streak,
+        "window_net_delta_deg": float(math.degrees(net_delta)),
+        "estimated_bias_delta_rad": estimated_bias_delta,
+        "estimated_bias_delta_deg": float(
+            math.degrees(estimated_bias_delta)
+        ),
+    }
 
 
 def resolve_uji_selection(selection):
@@ -113,6 +266,7 @@ def resolve_own_selection(selection):
     if token in available_own_dataset_keys():
         return {
             "own_profile": "package",
+            "own_data_source": "registry",
             "own_dataset_key": token,
             "own_data_dir": get_own_dataset_spec(token)["dataset_dir"],
         }
@@ -120,12 +274,14 @@ def resolve_own_selection(selection):
     if token in {"own_branch", "legacy", "web"}:
         return {
             "own_profile": "own_branch",
+            "own_data_source": "directory",
             "own_dataset_key": "own_branch",
             "own_data_dir": DEFAULT_OWN_BRANCH_DATA_DIR,
         }
 
     return {
         "own_profile": "own_branch",
+        "own_data_source": "directory",
         "own_dataset_key": Path(token).name or "own_branch",
         "own_data_dir": token,
     }
@@ -332,6 +488,51 @@ def resolve_own_map_profile(config: BranchConfig):
             "'tile_manifest'."
         )
     return token
+
+
+def resolve_own_data_source(config: BranchConfig):
+    """Resolve where sensor files come from, independently of algorithm tuning."""
+    token = str(config.own_data_source or "auto").strip().lower()
+    if token == "auto":
+        profile = str(config.own_profile).strip().lower()
+        return "registry" if profile in {"package", "registry"} else "directory"
+    if token not in {"registry", "directory"}:
+        raise ValueError(
+            "Unsupported own data source: "
+            f"{config.own_data_source}. Use 'auto', 'registry', or 'directory'."
+        )
+    return token
+
+
+def validate_own_route_bounds(route, geomag_map):
+    """Fail early when route coordinates and map geometry do not match."""
+    points = np.asarray(route, dtype=float)
+    if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 2:
+        raise ValueError("Own route must contain at least two finite [x, y] points.")
+    points = points[:, :2]
+    if not np.all(np.isfinite(points)):
+        raise ValueError("Own route contains non-finite coordinates.")
+
+    x_min = float(geomag_map["rangex_min"])
+    x_max = float(geomag_map["rangex_max"])
+    y_min = float(geomag_map["rangey_min"])
+    y_max = float(geomag_map["rangey_max"])
+    tolerance = 1e-6
+    outside = np.flatnonzero(
+        (points[:, 0] < x_min - tolerance)
+        | (points[:, 0] > x_max + tolerance)
+        | (points[:, 1] < y_min - tolerance)
+        | (points[:, 1] > y_max + tolerance)
+    )
+    if outside.size:
+        index = int(outside[0])
+        x, y = points[index]
+        raise ValueError(
+            "Own route and magnetic map use incompatible coordinates: "
+            f"point {index + 1} ({x:.3f}, {y:.3f}) is outside map bounds "
+            f"x=[{x_min:.3f}, {x_max:.3f}], "
+            f"y=[{y_min:.3f}, {y_max:.3f}]."
+        )
 
 
 def attach_own_vector_map(result, map_profile, vector_map_path):
@@ -1199,11 +1400,11 @@ def run_own_branch(config: BranchConfig):
     ``run_uji_branch`` does.
     """
     profile = str(config.own_profile).strip().lower()
-    use_registry = profile in {"package", "registry"}
     if profile not in {"own_branch", "legacy", "web", "package", "registry"}:
         raise ValueError(f"Unsupported own profile: {config.own_profile}. Use 'own_branch' or 'package'.")
 
-    if use_registry:
+    data_source = resolve_own_data_source(config)
+    if data_source == "registry":
         dataset_spec = assert_own_dataset_evaluable(config.own_dataset_key)
         own_dataset_key = config.own_dataset_key
         own_data_dir = dataset_spec["dataset_dir"]
@@ -1211,10 +1412,13 @@ def run_own_branch(config: BranchConfig):
     else:
         own_dataset_key = None
         own_data_dir = config.own_data_dir
+        custom_dataset_key = str(config.own_dataset_key or "").strip()
+        if not custom_dataset_key or custom_dataset_key == "own_branch":
+            custom_dataset_key = Path(own_data_dir).name or "own_branch"
         dataset_spec = {
-            "key": "own_branch",
+            "key": custom_dataset_key,
             "dataset_dir": str(Path(own_data_dir).resolve()),
-            "route_label": "manual_controls",
+            "route_label": custom_dataset_key,
         }
         route_controls = config.own_route_xy_m or default_own_branch_route_controls()
         route_full = densify_route_controls(route_controls, step_size=0.05)
@@ -1222,6 +1426,7 @@ def run_own_branch(config: BranchConfig):
     geomag_map = build_own_geomag_map(config)
     if not route_full:
         raise ValueError("Own route is empty.")
+    validate_own_route_bounds(route_full, geomag_map)
 
     full_frames = int(get_test_len(source="own", own_data_dir=own_data_dir, own_dataset_key=own_dataset_key))
     head = max(0, int(config.own_trim_head))
@@ -1235,6 +1440,13 @@ def run_own_branch(config: BranchConfig):
         raise ValueError("max_frames must be positive or None.")
 
     total_frames = usable_frames if config.max_frames is None else min(usable_frames, int(config.max_frames))
+    fault_injection = prepare_own_fault_injection(
+        config.own_fault_injection,
+        total_frames,
+    )
+    fault_rng = np.random.default_rng(
+        None if fault_injection is None else fault_injection["seed"]
+    )
     start_frac = head / float(full_frames)
     end_frac = (head + total_frames) / float(full_frames)
     if profile in {"own_branch", "legacy", "web"} and head == 0 and tail == 0 and config.max_frames is None:
@@ -1327,7 +1539,57 @@ def run_own_branch(config: BranchConfig):
     pdr_module = build_pdr_from_config(pdr_config)
     pf_module = build_pf_from_config(pf_config)
 
-    pf_state = PFState(init_pos=[float(route[0, 0]), float(route[0, 1])], mag_map=geomag_map, **dict(pf_config.state_params or {}))
+    pf_init_xy = [float(route[0, 0]), float(route[0, 1])]
+    if (
+        fault_injection is not None
+        and fault_injection["kind"] == "initial_position_offset"
+    ):
+        pf_init_xy[0] += float(fault_injection["magnitude"])
+    pf_state = PFState(
+        init_pos=pf_init_xy,
+        mag_map=geomag_map,
+        **dict(pf_config.state_params or {}),
+    )
+    health_monitor = LocalizationHealthMonitor(
+        warning_streak=max(1, int(config.own_pf_warning_streak)),
+        expand_streak=max(2, int(config.own_pf_expand_streak)),
+        reinitialize_streak=max(3, int(config.own_pf_reinitialize_streak)),
+    )
+    trusted_start_xy = (float(route[0, 0]), float(route[0, 1]))
+    unguarded_init_pos = pf_state.get_pos()
+    initial_anchor_error_m = float(
+        math.hypot(
+            float(unguarded_init_pos[0]) - trusted_start_xy[0],
+            float(unguarded_init_pos[1]) - trusted_start_xy[1],
+        )
+    )
+    initial_anchor_mismatch = bool(
+        initial_anchor_error_m
+        > max(0.0, float(config.own_initial_anchor_tolerance_m))
+    )
+    initial_health = health_monitor.update(
+        pf_state.last_position_uncertainty,
+        step_index=0,
+        integrity={"initial_anchor_mismatch": initial_anchor_mismatch},
+    )
+    localization_recovery_events = []
+    if initial_anchor_mismatch:
+        pf_state.reinitialize_at_anchor(
+            trusted_start_xy,
+            heading_angle=initial_heading_rad,
+        )
+        pf_state.last_position_uncertainty = pf_state.position_uncertainty()
+        localization_recovery_events.append(
+            {
+                **initial_health,
+                "anchor_xy_m": list(trusted_start_xy),
+                "initial_estimate_xy_m": [
+                    float(unguarded_init_pos[0]),
+                    float(unguarded_init_pos[1]),
+                ],
+                "initial_anchor_error_m": initial_anchor_error_m,
+            }
+        )
     init_pos = pf_state.get_pos()
     pf_list = [init_pos]
     pf_raw_list = [init_pos]
@@ -1336,6 +1598,16 @@ def run_own_branch(config: BranchConfig):
     ema_alpha = float(np.clip(config.own_pf_smoothing_alpha, 0.0, 0.999))
     smoothing_mode = str(config.own_pf_smoothing_mode).strip().lower()
     particle_counts = [len(pf_state.particles)]
+    pf_confidence_history = [dict(pf_state.last_position_uncertainty)]
+    localization_health_history = [initial_health]
+    fault_active_step_history = [
+        bool(
+            fault_injection is not None
+            and fault_injection["kind"] == "initial_position_offset"
+            and fault_injection["start_frame"] == 0
+        )
+    ]
+    last_reliable_pf_xy = (float(init_pos[0]), float(init_pos[1]))
     capture_track_progress = [0.0]
     ess_ratio_history = [1.0]
     heading_history = [float(initial_heading_rad) if initial_heading_rad is not None else 0.0]
@@ -1344,11 +1616,20 @@ def run_own_branch(config: BranchConfig):
     step_length_diagnostic_history = [{}]
     step_time_history = [0.0]
     step_sensor_time_history = []
+    step_duration_history = [0.0]
     capture_start_sensor_time = None
     capture_end_sensor_time = None
     heading_diagnostic_history = [{}]
     motion_diagnostic_history = [{}]
     weight_diagnostic_history = [{}]
+    sensor_integrity_history = [
+        {
+            "magnetometer_valid": True,
+            "initial_anchor_error_m": initial_anchor_error_m,
+            "initial_anchor_mismatch": initial_anchor_mismatch,
+            "heading_fault": False,
+        }
+    ]
     smoothing_diagnostic_history = [
         {
             "mode": smoothing_mode,
@@ -1383,6 +1664,16 @@ def run_own_branch(config: BranchConfig):
     grid_departure_direction = 0
     grid_measurement_offset = 0.0
     grid_snap_cooldown = 0
+    heading_delta_integrity_history = []
+    heading_rate_integrity_history = []
+    step_gyro_z_median_history = []
+    heading_fault_active = False
+    heading_fault_clear_streak = 0
+    heading_bias_delta_estimate = 0.0
+    heading_bias_rate_estimate = 0.0
+    heading_recovery_anchor_xy = trusted_start_xy
+    heading_recovery_secondary_xy = trusted_start_xy
+    heading_recovery_hypotheses = [float(initial_heading_rad or 0.0)]
 
     for _ in range(head):
         get_sensor(source="own", own_data_dir=own_data_dir, own_dataset_key=own_dataset_key)
@@ -1390,6 +1681,20 @@ def run_own_branch(config: BranchConfig):
     _print_progress(0, total_frames)
     for frame_idx in range(total_frames):
         mag, acc, gyro = get_sensor(source="own", own_data_dir=own_data_dir, own_dataset_key=own_dataset_key)
+        mag, acc, gyro, sensor_fault_active = apply_own_sensor_fault(
+            mag,
+            acc,
+            gyro,
+            frame_idx,
+            fault_injection,
+            fault_rng,
+        )
+        fault_window_active = bool(
+            fault_injection is not None
+            and fault_injection["start_frame"]
+            <= frame_idx
+            < fault_injection["end_frame_exclusive"]
+        )
         sensor_time = get_sensor_diagnostics().get("time")
         alignment_time = (
             float(frame_idx)
@@ -1413,9 +1718,22 @@ def run_own_branch(config: BranchConfig):
         step_mag_vectors = np.asarray(
             [sample[2][:3] for sample in sample_buffer], dtype=float
         )
-        obs_mag_vector = np.mean(step_mag_vectors, axis=0)
+        step_mag_norms = np.linalg.norm(step_mag_vectors, axis=1)
+        valid_mag_frames = (
+            np.all(np.isfinite(step_mag_vectors), axis=1)
+            & np.isfinite(step_mag_norms)
+            & (step_mag_norms >= 10.0)
+            & (step_mag_norms <= 100.0)
+        )
+        valid_mag_ratio = float(np.mean(valid_mag_frames))
+        magnetometer_valid = bool(valid_mag_ratio >= 0.80)
+        obs_mag_vector = (
+            np.mean(step_mag_vectors[valid_mag_frames], axis=0)
+            if np.any(valid_mag_frames)
+            else np.zeros(3, dtype=float)
+        )
         progress_match_diagnostics = {}
-        if progress_matcher is not None:
+        if progress_matcher is not None and magnetometer_valid:
             progress_match = progress_matcher.update(obs_mag_vector)
             progress_match_diagnostics = progress_match.as_dict()
             if progress_match.observation_count >= 4:
@@ -1508,8 +1826,89 @@ def run_own_branch(config: BranchConfig):
             heading_grid_state = float(heading_angle)
         else:
             heading_angle = float(heading_unconstrained)
-        obs_mag = float(pdr_module.extract_mag())
-        geomag_hist.append(obs_mag)
+        previous_integrity_heading = float(heading_history[-1])
+        integrity_heading_delta = math.atan2(
+            math.sin(heading_angle - previous_integrity_heading),
+            math.cos(heading_angle - previous_integrity_heading),
+        )
+        heading_delta_integrity_history.append(integrity_heading_delta)
+        previous_step_sensor_time = (
+            float(step_sensor_time_history[-1])
+            if step_sensor_time_history
+            else float(capture_start_sensor_time)
+        )
+        current_step_duration = max(
+            1e-3,
+            float(alignment_time) - previous_step_sensor_time,
+        )
+        heading_rate_integrity_history.append(
+            float(integrity_heading_delta / current_step_duration)
+        )
+        current_step_gyro_z_median = float(
+            np.median(
+                np.asarray(
+                    [sample[1][2] for sample in sample_buffer],
+                    dtype=float,
+                )
+            )
+        )
+        step_gyro_z_median_history.append(current_step_gyro_z_median)
+        heading_fault_was_active = heading_fault_active
+        heading_integrity = update_heading_integrity(
+            heading_delta_integrity_history,
+            fault_active=heading_fault_active,
+            clear_streak=heading_fault_clear_streak,
+            window_steps=config.own_gyro_heading_window_steps,
+            fault_threshold_deg=config.own_gyro_heading_fault_threshold_deg,
+            clear_threshold_deg=config.own_gyro_heading_clear_threshold_deg,
+            required_clear_streak=config.own_gyro_heading_clear_streak,
+        )
+        heading_fault_active = bool(heading_integrity["fault_active"])
+        heading_fault_cleared = bool(
+            heading_fault_was_active and not heading_fault_active
+        )
+        heading_fault_clear_streak = int(heading_integrity["clear_streak"])
+        if heading_integrity["fault_started"]:
+            heading_bias_delta_estimate = float(
+                heading_integrity["estimated_bias_delta_rad"]
+            )
+            integrity_window = max(
+                2, int(config.own_gyro_heading_window_steps)
+            )
+            recent_gyro_medians = step_gyro_z_median_history[
+                -integrity_window:
+            ]
+            reference_gyro_medians = step_gyro_z_median_history[
+                :-integrity_window
+            ]
+            reference_gyro_rate = (
+                float(
+                    np.median(
+                        np.asarray(reference_gyro_medians, dtype=float)
+                    )
+                )
+                if reference_gyro_medians
+                else 0.0
+            )
+            heading_bias_rate_estimate = float(
+                np.median(np.asarray(recent_gyro_medians, dtype=float))
+                - reference_gyro_rate
+            )
+        pf_state.motion_heading_delta_override = (
+            float(
+                integrity_heading_delta
+                - heading_bias_rate_estimate * current_step_duration
+            )
+            if heading_fault_active
+            else None
+        )
+        obs_mag = (
+            float(pdr_module.extract_mag())
+            if magnetometer_valid
+            else None
+        )
+        if obs_mag is not None:
+            geomag_hist.append(obs_mag)
         geomag_vector_history.append(obs_mag_vector.astype(float).tolist())
         progress_match_history.append(progress_match_diagnostics)
         geomag_window = geomag_hist[-config.window_size :]
@@ -1528,6 +1927,7 @@ def run_own_branch(config: BranchConfig):
             step_len=step_len,
             heading_angle=heading_angle,
             geomag_seq=geomag_window,
+            measurement_valid=magnetometer_valid,
         )
         pf_raw_list.append((float(pf_xy[0]), float(pf_xy[1])))
         smoothed_xy, smoothing_diagnostics = smooth_pf_output(
@@ -1542,6 +1942,160 @@ def run_own_branch(config: BranchConfig):
         )
         pf_smooth_x, pf_smooth_y = smoothed_xy
         pf_list.append((pf_smooth_x, pf_smooth_y))
+        confidence_sample = dict(pf_state.last_position_uncertainty)
+        pf_confidence_history.append(confidence_sample)
+        track_index = len(pf_list) - 1
+        health_sample = health_monitor.update(
+            confidence_sample,
+            step_index=track_index,
+            integrity={
+                "magnetometer_valid": magnetometer_valid,
+                "heading_fault": heading_fault_active,
+                "heading_fault_started": heading_integrity["fault_started"],
+                "heading_fault_cleared": heading_fault_cleared,
+                "relative_heading_recovery": bool(
+                    pf_state.heading_recovery_mode
+                ),
+            },
+        )
+        if (
+            str(confidence_sample.get("level", "low")) != "low"
+            and float(confidence_sample.get("score", 0.0)) >= 0.32
+            and magnetometer_valid
+            and not heading_fault_active
+        ):
+            last_reliable_pf_xy = (float(pf_xy[0]), float(pf_xy[1]))
+
+        recovery_action = str(health_sample.get("action", "none"))
+        if config.own_pf_recovery_enabled and recovery_action != "none":
+            if recovery_action == "expand_search":
+                pf_state.expand_search()
+            elif recovery_action == "reinitialize_anchor":
+                pf_state.reinitialize_at_anchor(
+                    trusted_start_xy,
+                    heading_angle=heading_angle,
+                )
+            elif recovery_action == "reinitialize_heading":
+                recovery_anchor_index = max(
+                    0,
+                    track_index
+                    - max(2, int(config.own_gyro_heading_window_steps)),
+                )
+                base_anchor_xy = tuple(
+                    map(float, pf_raw_list[recovery_anchor_index])
+                )
+                base_anchor_heading = float(
+                    heading_history[recovery_anchor_index]
+                )
+                recovery_lengths = [
+                    *step_length_history[recovery_anchor_index + 1 :],
+                    float(step_len),
+                ]
+                recovery_deltas = heading_delta_integrity_history[
+                    -len(recovery_lengths) :
+                ]
+                recovery_durations = [
+                    *step_duration_history[recovery_anchor_index + 1 :],
+                    float(current_step_duration),
+                ]
+                recovered_x, recovered_y = base_anchor_xy
+                recovered_heading = base_anchor_heading
+                for recovery_length, recovery_delta, recovery_duration in zip(
+                    recovery_lengths,
+                    recovery_deltas,
+                    recovery_durations,
+                    strict=True,
+                ):
+                    recovered_heading = float(
+                        (
+                            (
+                                recovered_heading
+                                + recovery_delta
+                                - heading_bias_rate_estimate
+                                * recovery_duration
+                                + math.pi
+                            )
+                            % (2.0 * math.pi)
+                        )
+                        - math.pi
+                    )
+                    recovered_x += float(
+                        recovery_length * math.cos(recovered_heading)
+                    )
+                    recovered_y += float(
+                        recovery_length * math.sin(recovered_heading)
+                    )
+                heading_recovery_hypotheses = [recovered_heading]
+                heading_recovery_anchor_xy = (
+                    float(recovered_x),
+                    float(recovered_y),
+                )
+                heading_recovery_secondary_xy = (
+                    float(pf_xy[0]),
+                    float(pf_xy[1]),
+                )
+                last_reliable_pf_xy = heading_recovery_anchor_xy
+                pf_state.reinitialize_global_heading(
+                    anchor_xy=heading_recovery_anchor_xy,
+                    secondary_anchor_xy=heading_recovery_secondary_xy,
+                    heading_hypotheses=heading_recovery_hypotheses,
+                )
+            elif recovery_action == "concentrate_heading":
+                pf_state.reinitialize_at_anchor(
+                    pf_xy,
+                    heading_angle=pf_state.mean_particle_heading(),
+                    position_std=0.35,
+                )
+                pf_state.heading_recovery_mode = True
+            elif recovery_action == "reinitialize":
+                if pf_state.heading_recovery_mode:
+                    pf_state.reinitialize_global_heading(
+                        anchor_xy=heading_recovery_anchor_xy,
+                        secondary_anchor_xy=heading_recovery_secondary_xy,
+                        heading_hypotheses=heading_recovery_hypotheses,
+                    )
+                else:
+                    pf_state.reinitialize_for_recovery(
+                        anchor_xy=last_reliable_pf_xy,
+                        pdr_hint_xy=pdr_list[-1],
+                        heading_angle=heading_angle,
+                    )
+            recovery_event = {
+                **health_sample,
+                "anchor_xy_m": [
+                    float(last_reliable_pf_xy[0]),
+                    float(last_reliable_pf_xy[1]),
+                ],
+                "pdr_hint_xy_m": [
+                    float(pdr_list[-1][0]),
+                    float(pdr_list[-1][1]),
+                ],
+            }
+            localization_recovery_events.append(recovery_event)
+            print(
+                "\n[localization] "
+                f"step={track_index} action={recovery_action} "
+                f"score={float(confidence_sample.get('score', 0.0)):.3f} "
+                f"reasons={','.join(health_sample.get('reason_codes', []))}"
+            )
+        elif not config.own_pf_recovery_enabled and recovery_action != "none":
+            health_monitor.recovery_count = max(
+                0, health_monitor.recovery_count - 1
+            )
+            health_sample["action"] = "none"
+            health_sample["recovery_count"] = int(
+                health_monitor.recovery_count
+            )
+            health_sample["status"] = (
+                "lost"
+                if int(health_sample.get("lost_streak", 0))
+                >= health_monitor.warning_streak
+                else "ambiguous"
+            )
+        localization_health_history.append(health_sample)
+        fault_active_step_history.append(
+            bool(sensor_fault_active or fault_window_active)
+        )
         smoothing_diagnostic_history.append(smoothing_diagnostics)
         particle_counts.append(len(pf_state.particles))
         capture_track_progress.append(
@@ -1553,9 +2107,37 @@ def run_own_branch(config: BranchConfig):
         step_length_diagnostic_history.append(step_length_diagnostics)
         step_time_history.append(float(head + frame_idx + 1))
         step_sensor_time_history.append(float(alignment_time))
+        step_duration_history.append(float(current_step_duration))
         heading_diagnostic_history.append(get_heading_diagnostics())
         motion_diagnostic_history.append(dict(pf_state.last_motion_diagnostics))
         weight_diagnostic_history.append(dict(pf_state.last_weight_diagnostics))
+        sensor_integrity_history.append(
+            {
+                "magnetometer_valid": magnetometer_valid,
+                "valid_magnetometer_frame_ratio": valid_mag_ratio,
+                "magnetic_norm_ut": (
+                    None if obs_mag is None else float(obs_mag)
+                ),
+                "heading_fault": heading_fault_active,
+                "heading_fault_started": bool(
+                    heading_integrity["fault_started"]
+                ),
+                "heading_fault_cleared": heading_fault_cleared,
+                "heading_window_net_delta_deg": float(
+                    heading_integrity["window_net_delta_deg"]
+                ),
+                "estimated_gyro_bias_delta_deg": float(
+                    math.degrees(heading_bias_delta_estimate)
+                ),
+                "estimated_gyro_bias_rate_rad_s": float(
+                    heading_bias_rate_estimate
+                ),
+                "step_gyro_z_median_rad_s": current_step_gyro_z_median,
+                "relative_heading_mode": bool(
+                    pf_state.heading_recovery_mode
+                ),
+            }
+        )
         ess_ratio_history.append(
             float(pf_state.last_weight_diagnostics.get("ess_ratio", 1.0))
         )
@@ -1644,6 +2226,7 @@ def run_own_branch(config: BranchConfig):
     payload = {
         "branch": "own",
         "own_profile": profile,
+        "own_data_source": data_source,
         "dataset_key": dataset_spec["key"],
         "dataset_dir": dataset_spec["dataset_dir"],
         "route_label": dataset_spec["route_label"],
@@ -1691,6 +2274,19 @@ def run_own_branch(config: BranchConfig):
         "step_cadence_weight": float(config.own_step_cadence_weight),
         "step_variability_weight": float(config.own_step_variability_weight),
         "pf_joint_calibration": bool(config.own_pf_joint_calibration),
+        "initial_anchor_tolerance_m": float(
+            config.own_initial_anchor_tolerance_m
+        ),
+        "gyro_heading_integrity": {
+            "window_steps": int(config.own_gyro_heading_window_steps),
+            "fault_threshold_deg": float(
+                config.own_gyro_heading_fault_threshold_deg
+            ),
+            "clear_threshold_deg": float(
+                config.own_gyro_heading_clear_threshold_deg
+            ),
+            "clear_streak": int(config.own_gyro_heading_clear_streak),
+        },
         "trim_head": int(head),
         "trim_tail": int(tail),
         "full_sensor_frames": int(full_frames),
@@ -1745,6 +2341,37 @@ def run_own_branch(config: BranchConfig):
         ),
         "pdr_track": [list(map(float, xy)) for xy in pdr_list],
         "pf_track": [list(map(float, xy)) for xy in pf_list],
+        "pf_confidence_history": pf_confidence_history,
+        "localization_health_history": localization_health_history,
+        "localization_recovery_events": localization_recovery_events,
+        "localization_recovery_summary": {
+            "enabled": bool(config.own_pf_recovery_enabled),
+            "event_count": len(localization_recovery_events),
+            "expand_search_count": sum(
+                event.get("action") == "expand_search"
+                for event in localization_recovery_events
+            ),
+            "reinitialize_count": sum(
+                event.get("action")
+                in {
+                    "reinitialize",
+                    "reinitialize_anchor",
+                    "reinitialize_heading",
+                }
+                for event in localization_recovery_events
+            ),
+            "anchor_reinitialize_count": sum(
+                event.get("action") == "reinitialize_anchor"
+                for event in localization_recovery_events
+            ),
+            "heading_reinitialize_count": sum(
+                event.get("action") == "reinitialize_heading"
+                for event in localization_recovery_events
+            ),
+            "final_status": localization_health_history[-1]["status"],
+        },
+        "fault_injection": fault_injection,
+        "fault_active_step_history": fault_active_step_history,
         "pf_raw_track": [list(map(float, xy)) for xy in pf_raw_list],
         "pf_smoothing_alpha": float(ema_alpha),
         "pf_smoothing_mode": smoothing_mode,
@@ -1765,9 +2392,11 @@ def run_own_branch(config: BranchConfig):
         "step_sensor_time_history_s": [
             float(x) for x in step_sensor_time_history
         ],
+        "step_duration_history_s": [float(x) for x in step_duration_history],
         "heading_diagnostic_history": heading_diagnostic_history,
         "motion_diagnostic_history": motion_diagnostic_history,
         "weight_diagnostic_history": weight_diagnostic_history,
+        "sensor_integrity_history": sensor_integrity_history,
         "geomagnetic_observation_history": [float(x) for x in geomag_hist],
         "geomagnetic_vector_history": geomag_vector_history,
         "progress_match_history": progress_match_history,

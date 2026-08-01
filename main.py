@@ -22,6 +22,7 @@ def build_config_from_args(args):
 
     own_defaults = resolve_own_selection(args.own)
     own_profile = args.own_profile or own_defaults["own_profile"]
+    own_data_source = args.own_data_source or own_defaults["own_data_source"]
     own_dataset_key = args.own_dataset_key or own_defaults["own_dataset_key"]
     own_data_dir = args.own_data_dir or own_defaults["own_data_dir"]
 
@@ -35,6 +36,7 @@ def build_config_from_args(args):
         uji_test_file=uji_test_file,
         uji_data_root=uji_data_root,
         own_profile=own_profile,
+        own_data_source=own_data_source,
         own_dataset_key=own_dataset_key,
         own_data_dir=own_data_dir,
         own_map_mode=args.own_map_mode,
@@ -102,8 +104,14 @@ def main():
         ),
     )
     parser.add_argument("--own-profile", choices=["own_branch", "package"], default=None)
+    parser.add_argument(
+        "--own-data-source",
+        choices=["auto", "registry", "directory"],
+        default=None,
+        help="Sensor source, independent of the own-data algorithm profile.",
+    )
     parser.add_argument("--own-dataset-key", type=str, default=None, help="Low-level override for package profile.")
-    parser.add_argument("--own-data-dir", type=str, default=None, help="Low-level override for own_branch profile.")
+    parser.add_argument("--own-data-dir", type=str, default=None, help="Sensor folder used by the directory data source.")
     parser.add_argument("--own-map-mode", choices=["raw", "tile12"], default="raw", help="Own map mode.")
     parser.add_argument(
         "--own-map-profile",

@@ -9,6 +9,7 @@ from Geomag.branching import (
     snap_heading_to_grid,
     summarize_corner_errors,
     update_grid_heading_state,
+    update_heading_integrity,
 )
 from Geomag.nn import Module
 from Geomag.pipeline import GeomagPipeline, PFModule
@@ -170,6 +171,35 @@ def test_grid_heading_state_rejects_isolated_straight_line_noise():
         )
 
     assert heading == pytest.approx(np.pi / 2.0)
+
+
+def test_heading_integrity_detects_sustained_yaw_but_not_single_right_turn():
+    right_turn = update_heading_integrity(
+        np.radians([0.0, 0.0, 90.0, 0.0, 0.0]),
+    )
+    sustained_bias = update_heading_integrity(
+        np.radians([28.0, 28.0, 28.0, 28.0, 28.0]),
+    )
+
+    assert right_turn["fault_started"] is False
+    assert sustained_bias["fault_started"] is True
+    assert sustained_bias["fault_active"] is True
+
+
+def test_heading_integrity_clears_only_after_sustained_small_deltas():
+    history = list(np.radians([28.0] * 5))
+    clear_streak = 0
+    result = {"fault_active": True}
+    for _ in range(5):
+        history.append(0.0)
+        result = update_heading_integrity(
+            history,
+            fault_active=True,
+            clear_streak=clear_streak,
+        )
+        clear_streak = result["clear_streak"]
+
+    assert result["fault_active"] is False
 
 
 def test_corner_and_endpoint_metrics_use_event_positions():

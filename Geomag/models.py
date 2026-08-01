@@ -34,6 +34,158 @@ class Particle:
     heading_bias: float = 0.0
 
 
+@dataclass
+class LocalizationHealthMonitor:
+    """Convert calibrated PF diagnostics into warnings and recovery actions.
+
+    A broad posterior is reported as ambiguous immediately, but recovery is
+    deliberately delayed until ambiguity persists.  This prevents the global
+    diversity particles used by normal resampling from causing a spurious
+    reset after a single weak magnetic observation.
+    """
+
+    warning_streak: int = 2
+    expand_streak: int = 4
+    reinitialize_streak: int = 7
+    cooldown_steps: int = 4
+    low_score_threshold: float = 0.32
+    lost_score_threshold: float = 0.14
+    low_confidence_streak: int = 0
+    lost_streak: int = 0
+    cooldown_remaining: int = 0
+    recovery_count: int = 0
+    sensor_fault_streak: int = 0
+    heading_fault_streak: int = 0
+
+    def update(
+        self,
+        uncertainty,
+        *,
+        step_index: int,
+        integrity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        integrity = dict(integrity or {})
+        score = float(uncertainty.get("score", 0.0))
+        core_radius = float(uncertainty.get("core_radius80_m", math.inf))
+        information = float(uncertainty.get("measurement_information", 0.0))
+        low = bool(
+            uncertainty.get("level") == "low"
+            or score < self.low_score_threshold
+        )
+        lost_evidence = bool(
+            score < self.lost_score_threshold
+            and (core_radius > 2.0 or information < 0.12)
+        )
+        magnetometer_valid = bool(
+            integrity.get("magnetometer_valid", True)
+        )
+        heading_fault = bool(integrity.get("heading_fault", False))
+        relative_heading_recovery = bool(
+            integrity.get("relative_heading_recovery", False)
+        )
+        heading_fault_started = bool(
+            integrity.get("heading_fault_started", False)
+        )
+        heading_fault_cleared = bool(
+            integrity.get("heading_fault_cleared", False)
+        )
+        initial_anchor_mismatch = bool(
+            integrity.get("initial_anchor_mismatch", False)
+        )
+        if (
+            relative_heading_recovery
+            and not heading_fault
+            and core_radius <= 1.75
+            and score >= 0.24
+        ):
+            # Once the gyro fault has cleared, a compact relative-heading
+            # posterior is usable even when the scalar magnetic map provides
+            # only modest discrimination.
+            low = False
+            lost_evidence = False
+        self.sensor_fault_streak = (
+            0 if magnetometer_valid else self.sensor_fault_streak + 1
+        )
+        self.heading_fault_streak = (
+            self.heading_fault_streak + 1 if heading_fault else 0
+        )
+        self.low_confidence_streak = (
+            self.low_confidence_streak + 1 if low else 0
+        )
+        self.lost_streak = self.lost_streak + 1 if lost_evidence else 0
+
+        if self.cooldown_remaining > 0:
+            self.cooldown_remaining -= 1
+
+        action = "none"
+        if heading_fault_cleared:
+            self.low_confidence_streak = 0
+            self.lost_streak = 0
+
+        if initial_anchor_mismatch:
+            action = "reinitialize_anchor"
+        elif heading_fault_started:
+            action = "reinitialize_heading"
+        elif heading_fault_cleared:
+            action = "concentrate_heading"
+        elif not magnetometer_valid or heading_fault:
+            # Do not repeatedly broaden/reset while the input sensor itself is
+            # invalid. The caller keeps prediction alive and waits for usable
+            # observations before evaluating ordinary PF recovery.
+            action = "none"
+        elif self.cooldown_remaining == 0:
+            if self.lost_streak >= self.reinitialize_streak:
+                action = "reinitialize"
+            elif self.low_confidence_streak == self.expand_streak:
+                action = "expand_search"
+
+        if action != "none":
+            self.recovery_count += 1
+            self.cooldown_remaining = self.cooldown_steps
+
+        if action != "none":
+            status = "recovering"
+        elif not magnetometer_valid:
+            status = "degraded"
+        elif heading_fault or initial_anchor_mismatch:
+            status = "lost"
+        elif self.lost_streak >= self.warning_streak:
+            status = "lost"
+        elif self.low_confidence_streak >= self.warning_streak:
+            status = "ambiguous"
+        else:
+            status = "healthy"
+
+        reasons = []
+        if core_radius > 2.0:
+            reasons.append("particle_core_spread")
+        if information < 0.12:
+            reasons.append("weak_magnetic_discrimination")
+        if float(uncertainty.get("ess_ratio", 1.0)) < 0.08:
+            reasons.append("weight_degeneracy")
+        if not magnetometer_valid:
+            reasons.append("magnetometer_invalid")
+        if heading_fault:
+            reasons.append("gyro_heading_inconsistent")
+        if initial_anchor_mismatch:
+            reasons.append("initial_anchor_mismatch")
+        if not reasons and low:
+            reasons.append("low_calibrated_score")
+
+        return {
+            "step_index": int(step_index),
+            "status": status,
+            "score": score,
+            "low_confidence_streak": int(self.low_confidence_streak),
+            "lost_streak": int(self.lost_streak),
+            "sensor_fault_streak": int(self.sensor_fault_streak),
+            "heading_fault_streak": int(self.heading_fault_streak),
+            "action": action,
+            "reason_codes": reasons,
+            "recovery_count": int(self.recovery_count),
+        }
+
+
 class PFState:
     """Particle-filter state: particles, map, resampling, and estimation."""
 
@@ -89,8 +241,11 @@ class PFState:
         self.last_weight_diagnostics = {}
         self.last_motion_diagnostics = {}
         self.last_motion_heading = None
+        self.heading_recovery_mode = False
+        self.motion_heading_delta_override = None
         self._normalize_weights()
         self.estimate = self._estimate_xy()
+        self.last_position_uncertainty = self.position_uncertainty()
 
     def _normalize_init_pos(self, init_pos, mag_map) -> tuple[float, float]:
         arr = np.asarray(init_pos, dtype=float).reshape(-1)
@@ -440,6 +595,357 @@ class PFState:
         if denom <= 1e-12:
             return 0.0
         return float(1.0 / denom)
+
+    def position_uncertainty(self) -> dict[str, float | str]:
+        """Summarize spatial particle dispersion for UI confidence display.
+
+        ``radius95_m`` is the weighted 95th percentile distance from the
+        posterior mean.  It is a diagnostic spread measure, not a guaranteed
+        statistical coverage bound.
+        """
+        live = [p for p in self.particles if getattr(p, "alive", True)]
+        if not live:
+            return {
+                "radius95_m": 0.0,
+                "core_radius80_m": 0.0,
+                "sigma_major_m": 0.0,
+                "sigma_minor_m": 0.0,
+                "ess_ratio": 0.0,
+                "measurement_information": 0.0,
+                "global_ambiguity": 0.0,
+                "score": 0.0,
+                "level": "low",
+            }
+        xs = np.asarray([p.x for p in live], dtype=float)
+        ys = np.asarray([p.y for p in live], dtype=float)
+        weights = np.asarray([max(float(p.weight), 0.0) for p in live], dtype=float)
+        total = float(np.sum(weights))
+        if total <= 1e-12:
+            weights.fill(1.0 / len(live))
+        else:
+            weights /= total
+        mean_x = float(np.sum(xs * weights))
+        mean_y = float(np.sum(ys * weights))
+        centered = np.column_stack((xs - mean_x, ys - mean_y))
+        covariance = (centered * weights[:, None]).T @ centered
+        eigenvalues = np.maximum(np.linalg.eigvalsh(covariance), 0.0)
+        sigma_minor = float(math.sqrt(eigenvalues[0]))
+        sigma_major = float(math.sqrt(eigenvalues[-1]))
+
+        distances = np.sqrt((xs - mean_x) ** 2 + (ys - mean_y) ** 2)
+        order = np.argsort(distances)
+        cumulative = np.cumsum(weights[order])
+
+        def weighted_radius(mass: float) -> float:
+            index = min(
+                int(np.searchsorted(cumulative, float(mass))),
+                len(order) - 1,
+            )
+            return float(distances[order[index]])
+
+        core_radius80 = weighted_radius(0.80)
+        radius95 = weighted_radius(0.95)
+        ess_ratio = float(self.effective_sample_size()) / max(float(len(live)), 1.0)
+        measurement_information = float(
+            np.clip(
+                self.last_weight_diagnostics.get("information_score", 0.65),
+                0.0,
+                1.0,
+            )
+        )
+        global_ambiguity = float(
+            np.clip((radius95 - core_radius80) / 4.0, 0.0, 1.0)
+        )
+        spatial_score = math.exp(-core_radius80 / 1.75)
+        measurement_score = 0.55 + 0.45 * measurement_information
+        degeneracy_score = float(np.clip(ess_ratio / 0.10, 0.0, 1.0))
+        ambiguity_score = 1.0 - 0.35 * global_ambiguity
+        score = float(
+            np.clip(
+                spatial_score
+                * measurement_score
+                * degeneracy_score
+                * ambiguity_score,
+                0.0,
+                1.0,
+            )
+        )
+        if score >= 0.62 and core_radius80 <= 0.85:
+            level = "high"
+        elif score >= 0.32 and core_radius80 <= 1.75:
+            level = "medium"
+        else:
+            level = "low"
+        return {
+            "radius95_m": radius95,
+            "core_radius80_m": core_radius80,
+            "sigma_major_m": sigma_major,
+            "sigma_minor_m": sigma_minor,
+            "ess_ratio": ess_ratio,
+            "measurement_information": measurement_information,
+            "global_ambiguity": global_ambiguity,
+            "score": score,
+            "level": level,
+        }
+
+    def expand_search(
+        self,
+        *,
+        inject_ratio: float = 0.25,
+        noise_scale: float = 0.45,
+    ) -> None:
+        """Broaden the next posterior without changing the current output."""
+        self.systematic_resample(
+            target_count=len(self.particles),
+            inject_ratio=inject_ratio,
+            noise_scale=noise_scale,
+        )
+
+    def reinitialize_for_recovery(
+        self,
+        *,
+        anchor_xy,
+        pdr_hint_xy=None,
+        heading_angle: float | None = None,
+    ) -> None:
+        """Rebuild a mixed local/PDR/global cloud after persistent loss."""
+        target_count = int(
+            np.clip(len(self.particles), self.min_particles, self.max_particles)
+        )
+        anchor = np.asarray(anchor_xy, dtype=float).reshape(-1)
+        if anchor.size < 2 or not np.all(np.isfinite(anchor[:2])):
+            anchor = np.asarray((self.x0, self.y0), dtype=float)
+        pdr_hint = np.asarray(
+            anchor[:2] if pdr_hint_xy is None else pdr_hint_xy,
+            dtype=float,
+        ).reshape(-1)
+        if pdr_hint.size < 2 or not np.all(np.isfinite(pdr_hint[:2])):
+            pdr_hint = anchor[:2]
+        heading = (
+            float(self.last_motion_heading or 0.0)
+            if heading_angle is None
+            else float(heading_angle)
+        )
+        local_count = int(round(target_count * 0.65))
+        pdr_count = int(round(target_count * 0.25))
+        global_count = target_count - local_count - pdr_count
+        particles = []
+
+        def append_cloud(count, center, std):
+            for _ in range(max(0, int(count))):
+                x, y = self.clamp_to_strict_map(
+                    float(center[0] + self.rng.normal(0.0, std)),
+                    float(center[1] + self.rng.normal(0.0, std)),
+                )
+                particles.append(
+                    Particle(
+                        x=x,
+                        y=y,
+                        theta=float(
+                            ((heading + self.rng.normal(0.0, 0.45) + math.pi)
+                             % (2.0 * math.pi))
+                            - math.pi
+                        ),
+                        weight=1.0 / target_count,
+                        step_scale=float(
+                            np.clip(1.0, self.min_step_scale, self.max_step_scale)
+                        ),
+                    )
+                )
+
+        append_cloud(local_count, anchor[:2], 1.10)
+        append_cloud(pdr_count, pdr_hint[:2], 1.60)
+        for _ in range(max(0, global_count)):
+            x, y = self._random_in_strict_map()
+            particles.append(
+                Particle(
+                    x=x,
+                    y=y,
+                    theta=float(self.rng.uniform(-math.pi, math.pi)),
+                    weight=1.0 / target_count,
+                )
+            )
+        self.particles = particles
+        self.n_particles = len(particles)
+        self._normalize_weights()
+        self.estimate = self._estimate_xy()
+
+    def reinitialize_at_anchor(
+        self,
+        anchor_xy,
+        *,
+        heading_angle: float | None = None,
+        position_std: float = 0.20,
+    ) -> None:
+        """Reset tightly around a caller-supplied trusted start anchor."""
+        anchor = np.asarray(anchor_xy, dtype=float).reshape(-1)
+        if anchor.size < 2 or not np.all(np.isfinite(anchor[:2])):
+            raise ValueError("A finite two-dimensional anchor is required.")
+        target_count = int(
+            np.clip(len(self.particles), self.min_particles, self.max_particles)
+        )
+        heading = float(heading_angle or 0.0)
+        particles = []
+        for _ in range(target_count):
+            x, y = self.clamp_to_strict_map(
+                float(anchor[0] + self.rng.normal(0.0, position_std)),
+                float(anchor[1] + self.rng.normal(0.0, position_std)),
+            )
+            particles.append(
+                Particle(
+                    x=x,
+                    y=y,
+                    theta=float(
+                        ((heading + self.rng.normal(0.0, 0.08) + math.pi)
+                         % (2.0 * math.pi))
+                        - math.pi
+                    ),
+                    weight=1.0 / target_count,
+                    step_scale=1.0,
+                )
+            )
+        self.particles = particles
+        self.n_particles = len(particles)
+        self._normalize_weights()
+        self.estimate = self._estimate_xy()
+
+    def mean_particle_heading(self) -> float:
+        """Return the weighted circular mean of live particle headings."""
+        live = [p for p in self.particles if getattr(p, "alive", True)]
+        if not live:
+            return float(self.last_motion_heading or 0.0)
+        weights = np.asarray(
+            [max(float(p.weight), 0.0) for p in live], dtype=float
+        )
+        total = float(np.sum(weights))
+        weights = (
+            np.full(len(live), 1.0 / len(live))
+            if total <= 1e-12
+            else weights / total
+        )
+        sine = float(
+            np.sum(weights * np.sin([float(p.theta) for p in live]))
+        )
+        cosine = float(
+            np.sum(weights * np.cos([float(p.theta) for p in live]))
+        )
+        return float(math.atan2(sine, cosine))
+
+    def reinitialize_global_heading(
+        self,
+        anchor_xy=None,
+        *,
+        secondary_anchor_xy=None,
+        heading_hypotheses=None,
+        local_ratio: float = 0.90,
+        secondary_ratio: float = 0.10,
+        local_position_std: float = 0.50,
+    ) -> None:
+        """Create position/heading hypotheses after gyro corruption.
+
+        A position saved before the suspicious yaw window is preferred when
+        available. Heading stays fully multi-modal because the absolute gyro
+        yaw can no longer be trusted.
+        """
+        target_count = int(
+            np.clip(len(self.particles), self.min_particles, self.max_particles)
+        )
+        anchor = None
+        if anchor_xy is not None:
+            candidate = np.asarray(anchor_xy, dtype=float).reshape(-1)
+            if candidate.size >= 2 and np.all(np.isfinite(candidate[:2])):
+                anchor = candidate[:2]
+        secondary_anchor = None
+        if secondary_anchor_xy is not None:
+            candidate = np.asarray(secondary_anchor_xy, dtype=float).reshape(-1)
+            if candidate.size >= 2 and np.all(np.isfinite(candidate[:2])):
+                secondary_anchor = candidate[:2]
+        headings = np.asarray(
+            [] if heading_hypotheses is None else heading_hypotheses,
+            dtype=float,
+        ).reshape(-1)
+
+        def draw_heading():
+            if headings.size:
+                base = float(headings[len(particles) % headings.size])
+                return float(
+                    ((base + self.rng.normal(0.0, 0.12) + math.pi)
+                     % (2.0 * math.pi))
+                    - math.pi
+                )
+            return float(self.rng.uniform(-math.pi, math.pi))
+
+        local_count = (
+            0
+            if anchor is None
+            else int(round(target_count * float(np.clip(local_ratio, 0.0, 1.0))))
+        )
+        secondary_count = (
+            0
+            if secondary_anchor is None
+            else int(
+                round(
+                    target_count
+                    * float(np.clip(secondary_ratio, 0.0, 1.0))
+                )
+            )
+        )
+        secondary_count = min(secondary_count, target_count - local_count)
+        particles = []
+        for _ in range(local_count):
+            x, y = self.clamp_to_strict_map(
+                float(anchor[0] + self.rng.normal(0.0, local_position_std)),
+                float(anchor[1] + self.rng.normal(0.0, local_position_std)),
+            )
+            particles.append(
+                Particle(
+                    x=x,
+                    y=y,
+                    theta=draw_heading(),
+                    weight=1.0 / target_count,
+                    step_scale=1.0,
+                    heading_bias=0.0,
+                )
+            )
+        for _ in range(secondary_count):
+            x, y = self.clamp_to_strict_map(
+                float(
+                    secondary_anchor[0]
+                    + self.rng.normal(0.0, local_position_std)
+                ),
+                float(
+                    secondary_anchor[1]
+                    + self.rng.normal(0.0, local_position_std)
+                ),
+            )
+            particles.append(
+                Particle(
+                    x=x,
+                    y=y,
+                    theta=draw_heading(),
+                    weight=1.0 / target_count,
+                    step_scale=1.0,
+                    heading_bias=0.0,
+                )
+            )
+        for _ in range(target_count - local_count - secondary_count):
+            x, y = self._random_in_strict_map()
+            particles.append(
+                Particle(
+                    x=x,
+                    y=y,
+                    theta=draw_heading(),
+                    weight=1.0 / target_count,
+                    step_scale=1.0,
+                    heading_bias=0.0,
+                )
+            )
+        self.particles = particles
+        self.n_particles = len(self.particles)
+        self.heading_recovery_mode = True
+        self.last_motion_heading = None
+        self._normalize_weights()
+        self.estimate = self._estimate_xy()
 
     def map_magnitude(self, x: float, y: float, k: int | None = None) -> float:
         if self.map_points is None:

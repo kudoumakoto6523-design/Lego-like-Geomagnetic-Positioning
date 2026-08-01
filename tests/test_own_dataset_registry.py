@@ -7,9 +7,11 @@ import pytest
 from Geomag.branching import (
     BranchConfig,
     build_own_geomag_map,
+    resolve_own_data_source,
     resolve_own_selection,
     run_own_branch,
     smooth_pf_output,
+    validate_own_route_bounds,
 )
 from Geomag.own_dataset_registry import (
     assert_own_dataset_evaluable,
@@ -43,6 +45,30 @@ def test_known_bad_capture_fails_before_loading_sensor_data():
 def test_valid_captures_remain_evaluable():
     assert assert_own_dataset_evaluable("route1_run2")["evaluation_enabled"] is True
     assert assert_own_dataset_evaluable("route2_run1")["evaluation_enabled"] is True
+
+
+def test_data_source_is_independent_from_optimized_algorithm_profile():
+    config = BranchConfig(
+        own_profile="package",
+        own_data_source="directory",
+        own_data_dir="/tmp/external-capture",
+    )
+
+    assert resolve_own_data_source(config) == "directory"
+
+
+def test_selection_sets_an_explicit_data_source():
+    assert resolve_own_selection("route1_run2")["own_data_source"] == "registry"
+    assert resolve_own_selection("/tmp/external-capture")["own_data_source"] == "directory"
+
+
+def test_route_outside_map_bounds_fails_early():
+    geomag_map = build_own_geomag_map(
+        BranchConfig(own_profile="package", own_map_profile="survey_kriging")
+    )
+
+    with pytest.raises(ValueError, match="incompatible coordinates"):
+        validate_own_route_bounds([[1.44, 0.55], [1.44, 8.25]], geomag_map)
 
 
 def test_route2_run2_is_confirmed_primary_independent_capture():

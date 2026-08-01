@@ -22,9 +22,11 @@ bash run.sh
 - 显示白色真实路线、青色 PDR 路线和黄色 PF 地磁匹配路线
 - 播放、缩放和拖动定位轨迹，并查看 PF/PDR 误差指标
 - 直接读取结果 JSON，或运行 App 内置的算法后端
+- 导入手机加速度计、陀螺仪和磁力计 CSV，并在运行前检查数据质量
 - 在“当前优化基线”“90° 受控路线”“原始 PF”预设之间切换
 - 调整平滑、航向网格约束、步长比例和 PF 联合校准参数
-- 保存运行参数、实时显示进度和日志，并将结果写入 App 支持目录
+- 显示 PF 可靠度和异常恢复事件，保存运行参数、进度与完整日志
+- 选择目标文件夹导出 1600×1000 PNG 轨迹图和 CSV 坐标数据
 
 实时参数后端使用 `xuml-v7-optimization` 分支的修改版算法。建议先切换到该分支，再构建 App：
 
@@ -37,6 +39,12 @@ open GeomagMac.xcodeproj
 ```
 
 在 Xcode 中选择 `GeomagMac` scheme 和 `My Mac` 后运行。构建脚本会将 Python、算法依赖、地图和自采数据打包到 App 内；运行构建后的 App 不需要另外安装 Python。生成的 `BackendDist/` 和 Xcode 缓存体积较大，不提交到 Git，只上传可复现的源码、构建脚本和三组示例结果。更完整的说明见 [`GeomagMac/README.md`](GeomagMac/README.md)。
+
+2026-08-01 的原生界面回归测试已覆盖软件启动、示例切换、轨迹显隐、播放/
+暂停、内置后端计算、日志、历史结果、异常恢复标记以及 PNG/CSV 导出。
+从 App 内运行 `route2_run2` 得到 PF 平均误差 `0.893 m`、终点误差
+`1.136 m`，与命令行基线一致；Python 测试为 153 项全部通过，两份 Xcode
+工程均构建成功。
 
 # First of All
 This is the package I am using for testing my own geomagnetic positioning project using Particle filter, and I am trying to make the project **more lego-like such as pytorch** , and you can see some of the characteristics are from pytorch, actually. I am going to make this a acedemic-directed tool, 
@@ -89,6 +97,50 @@ with the fraction of the automatically detected active walking interval. This
 matches the controlled constant-speed acquisition protocol while excluding
 recording time before the first step or after the last step. They are useful
 regression metrics, not centimeter-accurate ground truth.
+
+### 定位异常压力测试与恢复报告
+
+开发阶段可以在不修改原始采集文件的前提下，对已登记路线注入确定性
+异常并复用完整定位流水线。默认测试磁场偏置、磁场噪声、磁力计失效、
+陀螺仪偏置和错误初始位置：
+
+```bash
+python -m Geomag.stress_testing
+```
+
+默认使用 `route1_run2`、`route2_run2`，结果写入
+`results/localization_stress/summary.md`、`summary.json` 和 `summary.csv`。报告包含异常
+窗口内是否预警、预警/恢复延迟步数、扩搜与重初始化事件、异常前/中/后
+平均和最大误差、异常结束后的误差改善、错误恢复动作及最终是否重新收敛。
+每个基准与注入场景也会保存独立 JSON，便于追查逐步可靠度。
+
+定位流水线针对三类完整性问题采用独立处理：磁力计无效帧不会再进入磁场
+权重更新；配置的可信路线起点与初始粒子位置相差超过 1 m 时立即回到起点；
+连续异常偏航会触发陀螺仪偏置估计与相对航向传播，输入恢复后再收紧航向
+粒子。当前两组主数据的确定性测试中，三类故障共 6 个场景全部被检测；
+磁力计失效和起点偏移均最终重新收敛，`route2_run2` 的陀螺仪偏置也重新
+收敛。较长的 `route1_run2` 陀螺仪偏置平均误差已降至 1.371 m，但终点误差
+仍为 3.124 m，因此仍按“部分恢复、未最终收敛”记录，而不是作为完成项。
+
+只运行指定数据或场景：
+
+```bash
+python -m Geomag.stress_testing route2_run2 \
+  --scenario gyro_bias --scenario magnetic_dropout \
+  --output-dir results/localization_stress_route2
+```
+
+加入 `--plots` 可同时生成每次运行的轨迹图和诊断图。该工具的故障层默认
+关闭，正常的 `python main.py` 和 macOS App 定位结果不会受到影响。报告将
+异常结束后才出现的提示标为 `late_warning_only`，不会把迟到预警误算成
+检测成功；磁力计失效、陀螺仪持续偏置和起点偏移固定为必须检测、必须
+重新收敛的完整性故障，其他扰动则在误差显著增大时才要求检测。
+
+如果逐场景 JSON 已存在，只需重新计算汇总指标而不重跑算法：
+
+```bash
+python -m Geomag.stress_testing --reuse-existing
+```
 
 Use the legacy full-recording alignment for comparison:
 

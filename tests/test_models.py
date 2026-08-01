@@ -5,7 +5,12 @@ import math
 import numpy as np
 import pytest
 
-from Geomag.models import Particle, PFState, RunContext
+from Geomag.models import (
+    LocalizationHealthMonitor,
+    Particle,
+    PFState,
+    RunContext,
+)
 
 
 class TestParticle:
@@ -237,6 +242,152 @@ class TestPFStateEffectiveSampleSize:
         pf_state.particles[0].weight = 1.0
         ess = pf_state.effective_sample_size()
         assert ess == pytest.approx(1.0, abs=0.1)
+
+
+class TestPFStatePositionUncertainty:
+    def test_concentrated_particles_report_high_confidence(self, pf_state):
+        for particle in pf_state.particles:
+            particle.x = 1.0
+            particle.y = 1.0
+            particle.weight = 1.0 / len(pf_state.particles)
+
+        uncertainty = pf_state.position_uncertainty()
+
+        assert uncertainty["radius95_m"] == pytest.approx(0.0)
+        assert uncertainty["sigma_major_m"] == pytest.approx(0.0)
+        assert uncertainty["ess_ratio"] == pytest.approx(1.0)
+        assert uncertainty["level"] == "high"
+
+    def test_spread_particles_report_finite_radius(self, pf_state):
+        count = len(pf_state.particles)
+        for index, particle in enumerate(pf_state.particles):
+            particle.x = float(index) / max(count - 1, 1) * 2.0
+            particle.y = 1.0
+            particle.weight = 1.0 / count
+
+        uncertainty = pf_state.position_uncertainty()
+
+        assert uncertainty["radius95_m"] > 0.5
+        assert uncertainty["core_radius80_m"] <= uncertainty["radius95_m"]
+        assert math.isfinite(uncertainty["sigma_major_m"])
+        assert 0.0 <= uncertainty["score"] <= 1.0
+
+    def test_magnetic_information_changes_calibrated_score(self, pf_state):
+        for particle in pf_state.particles:
+            particle.x = 1.0
+            particle.y = 1.0
+            particle.weight = 1.0 / len(pf_state.particles)
+
+        pf_state.last_weight_diagnostics = {"information_score": 0.0}
+        weak = pf_state.position_uncertainty()
+        pf_state.last_weight_diagnostics = {"information_score": 1.0}
+        informative = pf_state.position_uncertainty()
+
+        assert weak["measurement_information"] == pytest.approx(0.0)
+        assert informative["score"] > weak["score"]
+
+
+class TestLocalizationHealthMonitor:
+    @staticmethod
+    def low_sample():
+        return {
+            "score": 0.05,
+            "level": "low",
+            "core_radius80_m": 2.5,
+            "measurement_information": 0.05,
+            "ess_ratio": 0.7,
+        }
+
+    def test_warns_before_recovery(self):
+        monitor = LocalizationHealthMonitor()
+
+        first = monitor.update(self.low_sample(), step_index=1)
+        second = monitor.update(self.low_sample(), step_index=2)
+
+        assert first["status"] == "healthy"
+        assert second["status"] == "lost"
+        assert second["action"] == "none"
+
+    def test_expands_then_reinitializes_after_persistent_loss(self):
+        monitor = LocalizationHealthMonitor()
+        samples = [
+            monitor.update(self.low_sample(), step_index=index)
+            for index in range(1, 9)
+        ]
+
+        assert samples[3]["action"] == "expand_search"
+        assert samples[-1]["action"] == "reinitialize"
+        assert samples[-1]["recovery_count"] == 2
+
+    def test_invalid_magnetometer_is_degraded_without_particle_reset(self):
+        monitor = LocalizationHealthMonitor()
+
+        sample = monitor.update(
+            self.low_sample(),
+            step_index=3,
+            integrity={"magnetometer_valid": False},
+        )
+
+        assert sample["status"] == "degraded"
+        assert sample["action"] == "none"
+        assert "magnetometer_invalid" in sample["reason_codes"]
+
+    def test_integrity_events_select_dedicated_recovery_actions(self):
+        monitor = LocalizationHealthMonitor()
+
+        anchor = monitor.update(
+            self.low_sample(),
+            step_index=0,
+            integrity={"initial_anchor_mismatch": True},
+        )
+        heading = monitor.update(
+            self.low_sample(),
+            step_index=1,
+            integrity={
+                "heading_fault": True,
+                "heading_fault_started": True,
+            },
+        )
+        cleared = monitor.update(
+            self.low_sample(),
+            step_index=2,
+            integrity={"heading_fault_cleared": True},
+        )
+
+        assert anchor["action"] == "reinitialize_anchor"
+        assert "initial_anchor_mismatch" in anchor["reason_codes"]
+        assert heading["action"] == "reinitialize_heading"
+        assert "gyro_heading_inconsistent" in heading["reason_codes"]
+        assert cleared["action"] == "concentrate_heading"
+
+
+class TestPFStateRecovery:
+    def test_reinitialize_builds_bounded_normalized_cloud(self, pf_state):
+        pf_state.reinitialize_for_recovery(
+            anchor_xy=(1.0, 1.0),
+            pdr_hint_xy=(1.8, 0.2),
+            heading_angle=math.pi / 2.0,
+        )
+
+        assert len(pf_state.particles) == pf_state.n_particles
+        assert sum(p.weight for p in pf_state.particles) == pytest.approx(1.0)
+        assert all(
+            pf_state.in_strict_map_bounds(p.x, p.y)
+            for p in pf_state.particles
+        )
+
+    def test_trusted_anchor_reset_is_tight_and_updates_estimate(self, pf_state):
+        pf_state.reinitialize_at_anchor(
+            (0.5, 1.5),
+            heading_angle=math.pi / 2.0,
+            position_std=0.05,
+        )
+
+        assert np.linalg.norm(np.asarray(pf_state.estimate) - [0.5, 1.5]) < 0.1
+        assert pf_state.mean_particle_heading() == pytest.approx(
+            math.pi / 2.0,
+            abs=0.05,
+        )
 
 
 class TestPFStateKLD:

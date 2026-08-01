@@ -53,7 +53,14 @@ class PFModule:
     stages: Module
     state_kwargs: dict = field(default_factory=dict)
 
-    def step(self, pf_state, step_len: float, heading_angle: float, geomag_seq):
+    def step(
+        self,
+        pf_state,
+        step_len: float,
+        heading_angle: float,
+        geomag_seq,
+        measurement_valid: bool = True,
+    ):
         if getattr(pf_state, "map_points", None) is None:
             return pf_state.get_pos()
 
@@ -64,6 +71,7 @@ class PFModule:
             "geomag_seq": list(geomag_seq),
             "target_n": len(pf_state.particles),
             "should_resample": False,
+            "measurement_valid": bool(measurement_valid),
         }
         self.stages(ctx)
         if "posterior_pos" in ctx:
@@ -123,11 +131,26 @@ class UpdateStage(Module):
         self.weight = WEIGHT_REGISTRY.build(weight, **(weight_kwargs or {}))
 
     def forward(self, ctx):
+        if not bool(ctx.get("measurement_valid", True)):
+            pf_state = ctx["pf_state"]
+            pf_state.last_weight_diagnostics = {
+                "measurement_valid": False,
+                "measurement_rejected_reason": "magnetometer_invalid",
+                "ess_ratio": float(pf_state.effective_sample_size())
+                / max(float(len(pf_state.particles)), 1.0),
+                "information_score": 0.0,
+            }
+            ctx["posterior_pos"] = pf_state.get_pos()
+            ctx["posterior_uncertainty"] = pf_state.position_uncertainty()
+            pf_state.last_position_uncertainty = ctx["posterior_uncertainty"]
+            return ctx
         self.weight.forward(ctx["pf_state"], geomag_seq=ctx["geomag_seq"])
         # The current state estimate belongs to the weighted posterior.
         # Resampling only prepares particles for the next step; global
         # diversity injections must not directly shift the current output.
         ctx["posterior_pos"] = ctx["pf_state"].get_pos()
+        ctx["posterior_uncertainty"] = ctx["pf_state"].position_uncertainty()
+        ctx["pf_state"].last_position_uncertainty = ctx["posterior_uncertainty"]
         return ctx
 
 
