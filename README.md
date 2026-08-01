@@ -14,6 +14,30 @@ bash run.sh
 ## Windows 端：
 
 直接运行 `run.bat`
+
+## 原生 macOS App：GeomagMac
+
+仓库的 [`GeomagMac/`](GeomagMac/) 目录包含一个使用 SwiftUI 和 Xcode 开发的原生 macOS 路径查看与算法实验 App。它可以：
+
+- 显示白色真实路线、青色 PDR 路线和黄色 PF 地磁匹配路线
+- 播放、缩放和拖动定位轨迹，并查看 PF/PDR 误差指标
+- 直接读取结果 JSON，或运行 App 内置的算法后端
+- 在“当前优化基线”“90° 受控路线”“原始 PF”预设之间切换
+- 调整平滑、航向网格约束、步长比例和 PF 联合校准参数
+- 保存运行参数、实时显示进度和日志，并将结果写入 App 支持目录
+
+实时参数后端使用 `xuml-v7-optimization` 分支的修改版算法。建议先切换到该分支，再构建 App：
+
+```bash
+git switch xuml-v7-optimization
+cd GeomagMac
+../.venv/bin/python -m pip install -r Backend/requirements-build.txt
+./Scripts/build_backend.sh
+open GeomagMac.xcodeproj
+```
+
+在 Xcode 中选择 `GeomagMac` scheme 和 `My Mac` 后运行。构建脚本会将 Python、算法依赖、地图和自采数据打包到 App 内；运行构建后的 App 不需要另外安装 Python。生成的 `BackendDist/` 和 Xcode 缓存体积较大，不提交到 Git，只上传可复现的源码、构建脚本和三组示例结果。更完整的说明见 [`GeomagMac/README.md`](GeomagMac/README.md)。
+
 # First of All
 This is the package I am using for testing my own geomagnetic positioning project using Particle filter, and I am trying to make the project **more lego-like such as pytorch** , and you can see some of the characteristics are from pytorch, actually. I am going to make this a acedemic-directed tool, 
 everyone who come up with an idea of, whatever the filter problem is, can immediately turn on the mac, quickly have a simulation, and feel free to build anything you like. World of Machine Learning can do it, I hope we will do it. 
