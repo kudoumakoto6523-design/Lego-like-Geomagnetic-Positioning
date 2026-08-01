@@ -1,0 +1,2 @@
+# Install into the algorithm project's virtual environment before packaging.
+pyinstaller==6.21.0
