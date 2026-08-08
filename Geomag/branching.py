@@ -22,9 +22,14 @@ from Geomag.own_dataset_registry import (
     assert_own_dataset_evaluable,
     available_own_dataset_keys,
     get_own_dataset_spec,
+    independent_repeat_keys,
 )
 from Geomag.pipeline import GeomagPipeline
-from Geomag.progress_matching import load_progress_matcher
+from Geomag.progress_matching import (
+    OnlineMagneticProgressMatcher,
+    aggregate_progress_templates,
+    load_progress_matcher,
+)
 
 
 @dataclass
@@ -72,10 +77,14 @@ class BranchConfig:
     own_vector_norm_tolerance_ratio: float = 0.35
     own_alignment_mode: str = "active_walk_uniform_speed"
     own_heading_snap_deg: float = 0.0
+    own_step_peak_prominence: float = 0.30
+    own_step_min_interval_s: float = 0.40
     own_step_weinberg_k: float = 0.31
     own_step_length_scale: float = 1.0
     own_progress_template_json: str | None = None
     own_progress_correction_gain: float = 0.0
+    own_repeat_progress_enabled: bool = True
+    own_repeat_progress_gain: float = 0.30
     own_step_cadence_weight: float = 0.0
     own_step_variability_weight: float = 0.0
     own_pf_joint_calibration: bool = True
@@ -373,7 +382,12 @@ def build_own_package_configs():
             "heading_bias_random_walk_std": 0.004,
         },
         weight="ddtw",
-        weight_params={"sigma": 1.0, "max_hist": 100, "calibrate_bias": True},
+        weight_params={
+            "sigma": 1.0,
+            "max_hist": 100,
+            "calibrate_bias": True,
+            "bias_calibration_updates": 5,
+        },
         particle_size="kld",
         particle_size_params={"epsilon": 0.10, "bin_size_xy": 0.5, "bin_size_theta": 0.35},
         resample_trigger="ess_or_target",
@@ -1039,6 +1053,73 @@ def build_uniform_walk_progress(
     return progress.astype(float).tolist(), interval
 
 
+def _extract_repeat_progress_template(dataset_key, *, step_judge_params):
+    """Extract per-step magnetic vectors from one registered capture."""
+    from Geomag import algorithms
+
+    spec = assert_own_dataset_evaluable(dataset_key)
+    frames = algorithms._load_own_sensor_frames(spec["dataset_dir"])
+    if len(frames) < 3:
+        raise ValueError(f"Repeat capture {dataset_key} has too few sensor frames.")
+    state_keys = ("last_sensor_frame", "last_step_samples", "last_step_time")
+    saved_state = {key: algorithms._ALGO_STATE.get(key) for key in state_keys}
+    buffer = []
+    vectors = []
+    step_times = []
+    try:
+        algorithms._ALGO_STATE["last_step_time"] = None
+        algorithms._ALGO_STATE["last_step_samples"] = None
+        for frame in frames:
+            algorithms._ALGO_STATE["last_sensor_frame"] = frame
+            sample = [frame["acc"], frame["gyro"], frame["mag"], frame["time"]]
+            buffer.append(sample)
+            if not algorithms.judge_step(
+                buffer,
+                method="peak_dynamic",
+                **dict(step_judge_params or {}),
+            ):
+                continue
+            magnetic = np.asarray([item[2][:3] for item in buffer], dtype=float)
+            magnitude = np.linalg.norm(magnetic, axis=1)
+            valid = (
+                np.all(np.isfinite(magnetic), axis=1)
+                & np.isfinite(magnitude)
+                & (magnitude >= 10.0)
+                & (magnitude <= 100.0)
+            )
+            if np.any(valid):
+                vectors.append(np.median(magnetic[valid], axis=0))
+                step_times.append(float(frame["time"]))
+            buffer.clear()
+    finally:
+        for key, value in saved_state.items():
+            algorithms._ALGO_STATE[key] = value
+    if len(vectors) < 3:
+        raise ValueError(
+            f"Repeat capture {dataset_key} produced fewer than three valid steps."
+        )
+    progress, _ = build_uniform_walk_progress(
+        step_times,
+        capture_start_time=float(frames[0]["time"]),
+        capture_end_time=float(frames[-1]["time"]),
+    )
+    return np.asarray(vectors, dtype=float), np.asarray(progress, dtype=float)
+
+
+def _build_repeat_progress_matcher(dataset_keys, *, step_judge_params):
+    """Build a robust causal template from independent repeat captures."""
+    keys = [dataset_keys] if isinstance(dataset_keys, str) else list(dataset_keys)
+    templates = [
+        _extract_repeat_progress_template(
+            key,
+            step_judge_params=step_judge_params,
+        )
+        for key in keys
+    ]
+    vectors, progress, _ = aggregate_progress_templates(templates)
+    return OnlineMagneticProgressMatcher(vectors, progress)
+
+
 def summarize_corner_errors(track, route_xy, detected_turns):
     """Compare sequential detected turns with registered interior vertices."""
     track_arr = np.asarray(track, dtype=float)
@@ -1408,7 +1489,10 @@ def run_own_branch(config: BranchConfig):
         dataset_spec = assert_own_dataset_evaluable(config.own_dataset_key)
         own_dataset_key = config.own_dataset_key
         own_data_dir = dataset_spec["dataset_dir"]
-        route_full = config.own_route_xy_m or get_true_route(source="own", own_dataset_key=own_dataset_key)
+        route_controls = config.own_route_xy_m or get_true_route(
+            source="own", own_dataset_key=own_dataset_key
+        )
+        route_full = route_controls
     else:
         own_dataset_key = None
         own_data_dir = config.own_data_dir
@@ -1453,8 +1537,12 @@ def run_own_branch(config: BranchConfig):
         route = np.asarray(route_full, dtype=float)
     else:
         route = sample_route_segment(route_full, start_frac=start_frac, end_frac=end_frac, n=max(100, total_frames // 2))
+    # Keep the sparse, user-supplied control points for corner/turn metrics.
+    # ``route_full`` may be densified for trajectory interpolation; treating
+    # every interpolated point as a corner creates hundreds of false reference
+    # turns on an otherwise simple rectangular route.
     evaluation_route_controls = slice_route_controls(
-        route_full, start_frac=start_frac, end_frac=end_frac
+        route_controls, start_frac=start_frac, end_frac=end_frac
     )
 
     pdr_config, pf_config = build_own_configs(profile=profile)
@@ -1473,6 +1561,19 @@ def run_own_branch(config: BranchConfig):
             }
         )
     if profile in {"package", "registry"}:
+        pdr_config.step_judge_params = dict(
+            pdr_config.step_judge_params or {}
+        )
+        pdr_config.step_judge_params.update(
+            {
+                "peak_prominence": float(
+                    config.own_step_peak_prominence
+                ),
+                "min_step_interval_s": float(
+                    config.own_step_min_interval_s
+                ),
+            }
+        )
         pdr_config.step_length_params = dict(pdr_config.step_length_params or {})
         pdr_config.step_length_params.update(
             {
@@ -1518,7 +1619,7 @@ def run_own_branch(config: BranchConfig):
             "magnetic_reject_deg": 45.0,
             "magnetic_correction_limit_deg_s": 12.0,
         }
-    elif heading_method in {"gyro", "q_fused", "tilt_compass"}:
+    elif heading_method in {"gyro", "core_motion", "q_fused", "tilt_compass"}:
         pdr_config.heading = heading_method
         pdr_config.heading_params = dict(pdr_config.heading_params or {})
         pdr_config.heading_params.update(
@@ -1534,7 +1635,8 @@ def run_own_branch(config: BranchConfig):
     else:
         raise ValueError(
             f"Unsupported own heading method: {config.own_heading_method}. "
-            "Use 'gyro', 'quaternion', 'q_fused', or 'tilt_compass'."
+            "Use 'gyro', 'core_motion', 'quaternion', 'q_fused', or "
+            "'tilt_compass'."
         )
     pdr_module = build_pdr_from_config(pdr_config)
     pf_module = build_pf_from_config(pf_config)
@@ -1641,12 +1743,31 @@ def run_own_branch(config: BranchConfig):
     geomag_hist = []
     geomag_vector_history = []
     progress_match_history = [{}]
-    progress_matcher = (
-        load_progress_matcher(config.own_progress_template_json)
-        if config.own_progress_template_json
-        and float(config.own_progress_correction_gain) > 0.0
-        else None
-    )
+    progress_matcher = None
+    progress_template_source = None
+    progress_correction_gain = float(config.own_progress_correction_gain)
+    if (
+        config.own_progress_template_json
+        and progress_correction_gain > 0.0
+    ):
+        progress_matcher = load_progress_matcher(
+            config.own_progress_template_json
+        )
+        progress_template_source = str(config.own_progress_template_json)
+    elif (
+        profile in {"package", "registry"}
+        and bool(config.own_repeat_progress_enabled)
+    ):
+        repeat_keys = independent_repeat_keys(own_dataset_key)
+        if repeat_keys:
+            progress_matcher = _build_repeat_progress_matcher(
+                repeat_keys,
+                step_judge_params=pdr_config.step_judge_params,
+            )
+            progress_template_source = "registry:" + ",".join(repeat_keys)
+            progress_correction_gain = float(
+                config.own_repeat_progress_gain
+            )
     _, _, route_length_m = _polyline_cumulative(evaluation_route_controls)
     cumulative_unscaled_distance_m = 0.0
     progress_step_scale = float(max(0.05, config.own_step_length_scale))
@@ -1746,9 +1867,7 @@ def run_own_branch(config: BranchConfig):
                         1.40,
                     )
                 )
-                gain = float(
-                    np.clip(config.own_progress_correction_gain, 0.0, 1.0)
-                )
+                gain = float(np.clip(progress_correction_gain, 0.0, 1.0))
                 progress_step_scale += gain * (
                     target_scale - progress_step_scale
                 )
@@ -2265,12 +2384,14 @@ def run_own_branch(config: BranchConfig):
         ),
         "gyro_rate_scale": float(config.own_gyro_rate_scale),
         "heading_snap_deg": float(config.own_heading_snap_deg),
+        "step_peak_prominence": float(config.own_step_peak_prominence),
+        "step_min_interval_s": float(config.own_step_min_interval_s),
         "step_weinberg_k": float(config.own_step_weinberg_k),
         "step_length_scale": float(config.own_step_length_scale),
         "progress_template_json": config.own_progress_template_json,
-        "progress_correction_gain": float(
-            config.own_progress_correction_gain
-        ),
+        "progress_template_source": progress_template_source,
+        "repeat_progress_enabled": bool(config.own_repeat_progress_enabled),
+        "progress_correction_gain": float(progress_correction_gain),
         "step_cadence_weight": float(config.own_step_cadence_weight),
         "step_variability_weight": float(config.own_step_variability_weight),
         "pf_joint_calibration": bool(config.own_pf_joint_calibration),

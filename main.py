@@ -71,10 +71,14 @@ def build_config_from_args(args):
         ),
         own_alignment_mode=args.own_alignment_mode,
         own_heading_snap_deg=args.own_heading_snap_deg,
+        own_step_peak_prominence=args.own_step_peak_prominence,
+        own_step_min_interval_s=args.own_step_min_interval_s,
         own_step_weinberg_k=args.own_step_weinberg_k,
         own_step_length_scale=args.own_step_length_scale,
         own_progress_template_json=args.own_progress_template_json,
         own_progress_correction_gain=args.own_progress_correction_gain,
+        own_repeat_progress_enabled=not args.no_own_repeat_progress,
+        own_repeat_progress_gain=args.own_repeat_progress_gain,
         own_step_cadence_weight=args.own_step_cadence_weight,
         own_step_variability_weight=args.own_step_variability_weight,
         own_pf_joint_calibration=not args.no_own_pf_joint_calibration,
@@ -129,9 +133,12 @@ def main():
     parser.add_argument("--own-heading-offset-deg", type=float, default=-90.0, help="Own heading offset after correction.")
     parser.add_argument(
         "--own-heading-method",
-        choices=["gyro", "quaternion", "q_fused", "tilt_compass"],
+        choices=["gyro", "core_motion", "quaternion", "q_fused", "tilt_compass"],
         default="gyro",
-        help="Heading estimator for own data.",
+        help=(
+            "Heading estimator for own data. core_motion uses DeviceMotion.csv "
+            "yaw when the iPhone package provides it."
+        ),
     )
     parser.add_argument(
         "--own-quaternion-use-magnetometer",
@@ -217,6 +224,18 @@ def main():
         help="Snap own-data headings to this grid interval; 0 disables the constraint.",
     )
     parser.add_argument(
+        "--own-step-peak-prominence",
+        type=float,
+        default=0.30,
+        help="Minimum acceleration-peak prominence for an own-data step.",
+    )
+    parser.add_argument(
+        "--own-step-min-interval-s",
+        type=float,
+        default=0.40,
+        help="Minimum time between own-data steps; suppresses duplicate peaks.",
+    )
+    parser.add_argument(
         "--own-step-weinberg-k",
         type=float,
         default=0.31,
@@ -247,6 +266,17 @@ def main():
         type=float,
         default=0.0,
         help="Experimental causal progress-to-step-scale correction gain; zero disables it.",
+    )
+    parser.add_argument(
+        "--no-own-repeat-progress",
+        action="store_true",
+        help="Disable automatic causal magnetic template matching against an independent same-route capture.",
+    )
+    parser.add_argument(
+        "--own-repeat-progress-gain",
+        type=float,
+        default=0.30,
+        help="Step-scale correction gain for an automatically selected independent repeat capture.",
     )
     parser.add_argument(
         "--own-step-variability-weight",

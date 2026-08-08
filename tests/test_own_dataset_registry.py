@@ -7,6 +7,7 @@ import pytest
 from Geomag.branching import (
     BranchConfig,
     build_own_geomag_map,
+    build_own_package_configs,
     resolve_own_data_source,
     resolve_own_selection,
     run_own_branch,
@@ -18,6 +19,7 @@ from Geomag.own_dataset_registry import (
     available_own_dataset_keys,
     default_own_evaluation_keys,
     get_own_dataset_spec,
+    independent_repeat_keys,
 )
 
 
@@ -95,11 +97,24 @@ def test_manifest_default_uses_selected_independent_captures():
     )
 
 
+def test_repeat_lookup_excludes_query_and_route_mismatch():
+    assert independent_repeat_keys("route2_run2") == ["route2_run1"]
+    assert independent_repeat_keys("route2_run1") == ["route2_run2"]
+    assert independent_repeat_keys("route1_run2") == []
+
+
 def test_own_branch_uses_low_lag_ema_default():
     config = BranchConfig()
 
     assert config.own_pf_smoothing_mode == "ema"
     assert config.own_pf_smoothing_alpha == pytest.approx(0.3)
+
+
+def test_package_step_detector_rejects_close_secondary_peaks():
+    pdr_config, _ = build_own_package_configs()
+
+    assert pdr_config.step_judge_params["peak_prominence"] == pytest.approx(0.30)
+    assert pdr_config.step_judge_params["min_step_interval_s"] == pytest.approx(0.40)
 
 
 def test_survey_map_profile_preserves_measured_npz_bounds():

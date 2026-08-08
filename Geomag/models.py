@@ -234,6 +234,7 @@ class PFState:
         self.x0, self.y0 = self._normalize_init_pos(init_pos, mag_map)
         self.particles = self._spawn_particles(self.n_particles)
         self.mag_bias = None
+        self.mag_bias_residuals = []
         self.current_mag_vector = None
         self.current_heading_angle = None
         self.vector_alignment_offset = None

@@ -11,6 +11,11 @@ build/
 GeomagMac/BackendDist/
 GeomagMac/.backendBuild/
 GeomagMac/.derivedData/
+NativeApps/**/.derivedData/
+NativeApps/**/.nativeDerivedData/
+NativeApps/**/.deviceDerivedData/
+NativeApps/**/xcuserdata/
+NativeApps/**/*.xcuserstate
 
 # Virtual environments
 .venv/

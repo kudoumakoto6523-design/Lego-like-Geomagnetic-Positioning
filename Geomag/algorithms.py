@@ -58,6 +58,7 @@ _ALGO_STATE = {
     "last_heading_time": None,
     "last_yaw_rate_rad_s": None,
     "gravity_vector": None,
+    "core_motion_yaw_origin_rad": None,
     "step_length_debug": {},
 }
 
@@ -965,6 +966,33 @@ def _load_csv_xyz(path, time_candidates, x_candidates, y_candidates, z_candidate
     return unique_times, x[unique_idx], y[unique_idx], z[unique_idx]
 
 
+def _load_csv_scalar(path, time_candidates, value_candidates):
+    path = Path(path)
+    if not path.exists():
+        return None, None
+    with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            return None, None
+        time_col = _pick_column(reader.fieldnames, time_candidates)
+        value_col = _pick_column(reader.fieldnames, value_candidates)
+        if time_col is None or value_col is None:
+            return None, None
+        rows = []
+        for row in reader:
+            try:
+                rows.append((float(row[time_col]), float(row[value_col])))
+            except (KeyError, TypeError, ValueError):
+                continue
+    if not rows:
+        return None, None
+    rows.sort(key=lambda item: item[0])
+    times = np.asarray([item[0] for item in rows], dtype=float)
+    values = np.asarray([item[1] for item in rows], dtype=float)
+    unique_times, unique_idx = np.unique(times, return_index=True)
+    return unique_times, values[unique_idx]
+
+
 def _load_own_sensor_frames(own_data_dir):
     base = Path(own_data_dir)
     mag_t, mag_x, mag_y, mag_z = _load_csv_xyz(
@@ -987,6 +1015,11 @@ def _load_own_sensor_frames(own_data_dir):
         x_candidates=["X (rad/s)", "X", "gx"],
         y_candidates=["Y (rad/s)", "Y", "gy"],
         z_candidates=["Z (rad/s)", "Z", "gz"],
+    )
+    motion_t, motion_yaw = _load_csv_scalar(
+        base / "DeviceMotion.csv",
+        time_candidates=["Time (s)", "time", "timestamp"],
+        value_candidates=["Yaw (rad)", "yaw"],
     )
 
     # Own-data PDR is acceleration-driven, so keep the accelerometer time axis
@@ -1014,11 +1047,15 @@ def _load_own_sensor_frames(own_data_dir):
             np.interp(base_t, mag_t, mag_z),
         )
     )
+    aligned_motion_yaw = (
+        None
+        if motion_t is None or motion_yaw is None
+        else np.interp(base_t, motion_t, np.unwrap(motion_yaw))
+    )
 
     frames = []
     for i in range(base_t.size):
-        frames.append(
-            {
+        frame = {
                 "time": float(base_t[i]),
                 "mag": [float(mag_arr[i, 0]), float(mag_arr[i, 1]), float(mag_arr[i, 2])],
                 "acc": [float(acc_arr[i, 0]), float(acc_arr[i, 1]), float(acc_arr[i, 2])],
@@ -1026,7 +1063,9 @@ def _load_own_sensor_frames(own_data_dir):
                 "gyro_mode": "angular_rate_rad_s",
                 "source": "own",
             }
-        )
+        if aligned_motion_yaw is not None:
+            frame["core_motion_yaw_rad"] = float(aligned_motion_yaw[i])
+        frames.append(frame)
     if not frames:
         raise ValueError(f"No sensor frames built from own dataset: {own_data_dir}")
     return frames
@@ -1194,6 +1233,7 @@ def _api_get_test_len(
     _ALGO_STATE["last_heading_time"] = None
     _ALGO_STATE["last_yaw_rate_rad_s"] = None
     _ALGO_STATE["gravity_vector"] = None
+    _ALGO_STATE["core_motion_yaw_origin_rad"] = None
     _ALGO_STATE["step_length_debug"] = {}
     return len(frames)
 
@@ -1730,7 +1770,7 @@ def _api_get_heading_angle(
         _ALGO_STATE["yaw_rate_rad_s"] = float(yaw_rates[-1])
         return _wrap_angle_pi(float(_ALGO_STATE["heading_rad"] + delta_yaw))
 
-    yaw_gyro = gyro_heading_estimate()
+    yaw_gyro = gyro_heading_estimate() if method != "core_motion" else None
     yaw_compass = (
         compass_map_rad
         if compass_is_start_calibrated
@@ -1742,7 +1782,26 @@ def _api_get_heading_angle(
     )
     alpha_used = None
 
-    if method == "gyro":
+    if method == "core_motion":
+        motion_yaw = last_frame.get("core_motion_yaw_rad")
+        if motion_yaw is None or not math.isfinite(float(motion_yaw)):
+            raise ValueError(
+                "core_motion heading requires DeviceMotion.csv with a finite "
+                "Yaw (rad) column."
+            )
+        if _ALGO_STATE.get("core_motion_yaw_origin_rad") is None:
+            _ALGO_STATE["core_motion_yaw_origin_rad"] = float(motion_yaw)
+        motion_delta = float(
+            float(motion_yaw)
+            - float(_ALGO_STATE["core_motion_yaw_origin_rad"])
+        )
+        motion_anchor = (
+            float(initial_heading_rad)
+            if initial_heading_rad is not None
+            else float(heading_offset_rad)
+        )
+        yaw = _wrap_angle_pi(motion_anchor + motion_delta)
+    elif method == "gyro":
         yaw = yaw_gyro
     elif method == "tilt_compass":
         yaw = yaw_compass
@@ -1760,7 +1819,10 @@ def _api_get_heading_angle(
             compass_correction = float(np.clip(compass_correction, -limit, limit))
         yaw = _wrap_angle_pi(yaw_gyro + compass_correction)
     else:
-        raise ValueError("Unsupported heading method. Supported: ['gyro', 'tilt_compass', 'q_fused']")
+        raise ValueError(
+            "Unsupported heading method. Supported: "
+            "['gyro', 'core_motion', 'tilt_compass', 'q_fused']"
+        )
 
     if not (sensor_source == "own" and gyro_mode == "angular_rate_rad_s"):
         yaw = _wrap_angle_pi(float(yaw + heading_offset_rad))
@@ -1777,11 +1839,18 @@ def _api_get_heading_angle(
         "alpha_used": alpha_used,
         "initial_heading_rad": None if initial_heading_rad is None else float(initial_heading_rad),
         "offset_baked_into_heading": bool(offset_baked_into_heading),
-        "yaw_gyro_deg": float(math.degrees(yaw_gyro)),
-        "yaw_compass_deg": float(math.degrees(yaw_compass)),
-        "compass_innovation_deg": float(
-            math.degrees(_wrap_angle_pi(yaw_compass - yaw_gyro))
+        "yaw_gyro_deg": (
+            None if yaw_gyro is None else float(math.degrees(yaw_gyro))
         ),
+        "yaw_compass_deg": float(math.degrees(yaw_compass)),
+        "compass_innovation_deg": (
+            None
+            if yaw_gyro is None
+            else float(
+                math.degrees(_wrap_angle_pi(yaw_compass - yaw_gyro))
+            )
+        ),
+        "core_motion_yaw_rad": last_frame.get("core_motion_yaw_rad"),
         "gyro_bias_z_rad_s": float(_ALGO_STATE.get("gyro_bias_z", 0.0)),
         "gyro_bias_samples": int(_ALGO_STATE.get("gyro_bias_samples", 0)),
         "gyro_bias_pending_samples": int(

@@ -136,6 +136,53 @@ def test_own_compass_is_aligned_from_known_initial_heading(monkeypatch):
     assert diagnostics["compass_innovation_deg"] == pytest.approx(0.0)
 
 
+def test_core_motion_heading_preserves_relative_yaw_from_route_anchor(monkeypatch):
+    samples = [
+        [[0.0, 0.0, 9.80665], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.0]
+    ]
+    for key, value in {
+        "heading_rad": 0.0,
+        "is_heading_initialized": False,
+        "core_motion_yaw_origin_rad": None,
+    }.items():
+        monkeypatch.setitem(algorithms._ALGO_STATE, key, value)
+    monkeypatch.setitem(
+        algorithms._ALGO_STATE,
+        "last_sensor_frame",
+        {
+            "source": "own",
+            "gyro_mode": "angular_rate_rad_s",
+            "core_motion_yaw_rad": 0.2,
+        },
+    )
+
+    first = algorithms.get_heading_angle(
+        samples,
+        method="core_motion",
+        initial_heading_rad=1.0,
+        calibrate_gyro_bias=False,
+    )
+    monkeypatch.setitem(
+        algorithms._ALGO_STATE,
+        "last_sensor_frame",
+        {
+            "source": "own",
+            "gyro_mode": "angular_rate_rad_s",
+            "core_motion_yaw_rad": 0.7,
+        },
+    )
+    second = algorithms.get_heading_angle(
+        samples,
+        method="core_motion",
+        initial_heading_rad=1.0,
+        calibrate_gyro_bias=False,
+    )
+
+    assert first == pytest.approx(1.0)
+    assert second == pytest.approx(1.5)
+    assert algorithms.get_heading_diagnostics()["method"] == "core_motion"
+
+
 def test_stationary_samples_calibrate_gyro_z_bias(monkeypatch):
     samples = [
         [[0.0, 0.0, 9.80665], [0.0, 0.0, 0.05], [1.0, 0.0, 0.0]]

@@ -154,3 +154,19 @@ def resolve_own_dataset_dir(own_dataset_key):
 
 def get_own_route_xy_m(own_dataset_key):
     return get_own_dataset_spec(own_dataset_key)["route_xy_m"]
+
+
+def independent_repeat_keys(own_dataset_key):
+    """Return evaluable captures of the same route, excluding the query run."""
+    target = get_own_dataset_spec(own_dataset_key)
+    output = []
+    for key in available_own_dataset_keys(evaluation_only=True):
+        if key == target["key"]:
+            continue
+        candidate = get_own_dataset_spec(key)
+        if candidate["route_label"] != target["route_label"]:
+            continue
+        if candidate.get("data_issue"):
+            continue
+        output.append(key)
+    return sorted(output)

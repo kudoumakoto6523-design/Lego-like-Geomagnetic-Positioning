@@ -151,6 +151,27 @@ class TestHybridMagneticWeight:
         assert pf_state.mag_bias == pytest.approx(2.0)
         assert pf_state.last_weight_diagnostics["mag_bias"] == pytest.approx(2.0)
 
+    def test_robust_bias_calibration_uses_median_of_initial_updates(self, pf_state):
+        estimate = pf_state.get_pos()
+        expected = pf_state.map_magnitude(*estimate)
+        weight = DDTWWeight(
+            sigma=1.0,
+            accumulate=False,
+            calibrate_bias=True,
+            bias_calibration_updates=3,
+        )
+
+        for offset in (10.0, 2.0, 4.0):
+            weight.forward(pf_state, geomag_seq=[expected + offset])
+
+        assert pf_state.mag_bias == pytest.approx(4.0)
+        assert pf_state.last_weight_diagnostics[
+            "mag_bias_calibration_samples"
+        ] == 3
+        assert pf_state.last_weight_diagnostics[
+            "mag_bias_calibration_complete"
+        ] is True
+
     @staticmethod
     def _vector_state():
         mag_map = {

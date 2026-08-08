@@ -338,6 +338,7 @@ class DDTWWeight(WeightBlock):
         gradient_sigma: float | None = None,
         gradient_weight: float = 0.0,
         calibrate_bias: bool = False,
+        bias_calibration_updates: int = 1,
         min_shape_history: int = 4,
         vector_weight: float = 0.0,
         vector_angle_sigma_deg: float = 25.0,
@@ -358,6 +359,7 @@ class DDTWWeight(WeightBlock):
         self.gradient_sigma = None if gradient_sigma is None else float(gradient_sigma)
         self.gradient_weight = float(max(0.0, gradient_weight))
         self.calibrate_bias = bool(calibrate_bias)
+        self.bias_calibration_updates = int(max(1, bias_calibration_updates))
         self.min_shape_history = int(max(2, min_shape_history))
         self.vector_weight = float(max(0.0, vector_weight))
         self.vector_angle_sigma = math.radians(
@@ -467,15 +469,20 @@ class DDTWWeight(WeightBlock):
             else None
         )
 
+        bias_residuals = getattr(pf_state, "mag_bias_residuals", None)
+        if bias_residuals is None:
+            bias_residuals = []
+            pf_state.mag_bias_residuals = bias_residuals
         if (
             self.calibrate_bias
             and obs.size
-            and getattr(pf_state, "mag_bias", None) is None
+            and len(bias_residuals) < self.bias_calibration_updates
         ):
             estimate = pf_state.get_pos()
             initial_map_mag = float(pf_state.map_magnitude(estimate[0], estimate[1]))
             if math.isfinite(initial_map_mag):
-                pf_state.mag_bias = float(obs[-1] - initial_map_mag)
+                bias_residuals.append(float(obs[-1] - initial_map_mag))
+                pf_state.mag_bias = float(np.median(bias_residuals))
         mag_bias = float(getattr(pf_state, "mag_bias", 0.0) or 0.0)
         calibrated_obs = obs - mag_bias
         vector_context, vector_reason = self._prepare_vector_context(pf_state)
@@ -637,6 +644,10 @@ class DDTWWeight(WeightBlock):
         )
         pf_state.last_weight_diagnostics = {
             "mag_bias": float(mag_bias),
+            "mag_bias_calibration_samples": int(len(bias_residuals)),
+            "mag_bias_calibration_complete": bool(
+                len(bias_residuals) >= self.bias_calibration_updates
+            ),
             "shape_distance_mean": float(np.mean(shape_distances)) if shape_distances else 0.0,
             "level_residual_abs_mean": (
                 float(np.mean(level_residuals)) if level_residuals else 0.0
@@ -868,6 +879,11 @@ def _build_heading_tilt_compass(**kwargs):
 @HEADING_REGISTRY.register("gyro", param_docs=describe_callable_params(AlgoHeading.__init__))
 def _build_heading_gyro(**kwargs):
     return AlgoHeading(method="gyro", **kwargs)
+
+
+@HEADING_REGISTRY.register("core_motion", param_docs=describe_callable_params(AlgoHeading.__init__))
+def _build_heading_core_motion(**kwargs):
+    return AlgoHeading(method="core_motion", **kwargs)
 
 
 @MAG_REGISTRY.register("norm_mean", param_docs=describe_callable_params(AlgoMag.__init__))
