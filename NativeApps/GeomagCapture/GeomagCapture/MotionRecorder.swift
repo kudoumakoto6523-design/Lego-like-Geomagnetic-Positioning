@@ -49,6 +49,8 @@ final class MotionRecorder: ObservableObject {
     @Published private(set) var nextRouteAnchorDescription = ""
     @Published private(set) var routeAnchorCompleted = 0
     @Published private(set) var routeAnchorTotal = 0
+    @Published private(set) var routeAnchorSkipped = 0
+    @Published private(set) var canUndoLastRouteAnchor = false
     @Published private(set) var anchorReminderNeeded = false
     @Published var errorMessage: String?
 
@@ -72,6 +74,7 @@ final class MotionRecorder: ObservableObject {
     private var spatialEvents: [SpatialEventSample] = []
     private var initialDeviceYawDegrees: Double?
     private var nextRouteAnchorIndex = 0
+    private var routeAnchorEventIndices: [Int] = []
     private var lastAnchorTime = 0.0
     private var displayTimer: Timer?
     private var recoveryStore: CaptureRecoveryStore?
@@ -107,6 +110,10 @@ final class MotionRecorder: ObservableObject {
     var routeCoverage: Double {
         guard routeAnchorTotal > 0 else { return 0 }
         return min(Double(routeAnchorCompleted) / Double(routeAnchorTotal), 1)
+    }
+
+    var hasIncompleteRouteAnchors: Bool {
+        routeAnchorTotal > 0 && routeAnchorCompleted < routeAnchorTotal
     }
 
     var sensorAvailabilityText: String {
@@ -217,6 +224,9 @@ final class MotionRecorder: ObservableObject {
         nextRouteAnchorIndex = parsedRoute == nil ? 0 : 1
         routeAnchorTotal = parsedRoute?.count ?? 0
         routeAnchorCompleted = parsedRoute == nil ? 0 : 1
+        routeAnchorSkipped = 0
+        routeAnchorEventIndices = []
+        canUndoLastRouteAnchor = false
         lastAnchorTime = 0
         anchorReminderNeeded = false
         isPaused = false
@@ -385,10 +395,67 @@ final class MotionRecorder: ObservableObject {
               route.indices.contains(nextRouteAnchorIndex) else { return }
         let point = route[nextRouteAnchorIndex]
         let fallback = "route-point-\(nextRouteAnchorIndex)"
-        appendAnchor(label: normalizedEventLabel(label, fallback: fallback), x: point[0], y: point[1])
+        let eventIndex = appendAnchor(
+            label: normalizedEventLabel(label, fallback: fallback),
+            x: point[0],
+            y: point[1]
+        )
+        routeAnchorEventIndices.append(eventIndex)
+        canUndoLastRouteAnchor = true
         nextRouteAnchorIndex += 1
         routeAnchorCompleted = min(nextRouteAnchorIndex, routeAnchorTotal)
         refreshNextRouteAnchor()
+    }
+
+    func skipNextRouteAnchor() {
+        guard isRecording, isPaused,
+              let route,
+              route.indices.contains(nextRouteAnchorIndex) else { return }
+        refreshDisplay()
+        let point = route[nextRouteAnchorIndex]
+        spatialEvents.append(SpatialEventSample(
+            time: currentCaptureTime,
+            type: "anchor_skipped",
+            label: "route-point-\(nextRouteAnchorIndex)",
+            x: point[0],
+            y: point[1],
+            headingDegrees: currentGlobalHeading,
+            deviceYawDegrees: counts.deviceMotion > 0 ? yawDegrees : nil
+        ))
+        nextRouteAnchorIndex += 1
+        routeAnchorCompleted = min(nextRouteAnchorIndex, routeAnchorTotal)
+        routeAnchorSkipped += 1
+        canUndoLastRouteAnchor = false
+        spatialEventCount = spatialEvents.count
+        lastAnchorTime = currentCaptureTime
+        anchorReminderNeeded = false
+        lastSpatialEventMessage = String(
+            format: "已跳过不可达路线点 · (%.2f, %.2f)",
+            point[0], point[1]
+        )
+        refreshNextRouteAnchor()
+        recoveryStore?.updateSpatialEvents(spatialEvents)
+    }
+
+    func undoLastRouteAnchor() {
+        guard isRecording, !isPaused,
+              let eventIndex = routeAnchorEventIndices.popLast(),
+              spatialEvents.indices.contains(eventIndex),
+              nextRouteAnchorIndex > 1 else { return }
+        let removed = spatialEvents.remove(at: eventIndex)
+        nextRouteAnchorIndex -= 1
+        routeAnchorCompleted = min(nextRouteAnchorIndex, routeAnchorTotal)
+        canUndoLastRouteAnchor = false
+        spatialEventCount = spatialEvents.count
+        lastAnchorTime = spatialEvents.last(where: { $0.type == "anchor" })?.time ?? 0
+        anchorReminderNeeded = false
+        lastSpatialEventMessage = String(
+            format: "已撤销路线锚点 · (%.2f, %.2f)",
+            removed.x ?? 0,
+            removed.y ?? 0
+        )
+        refreshNextRouteAnchor()
+        recoveryStore?.updateSpatialEvents(spatialEvents)
     }
 
     func togglePause() {
@@ -574,7 +641,8 @@ final class MotionRecorder: ObservableObject {
         return trimmed.isEmpty ? fallback : trimmed
     }
 
-    private func appendAnchor(label: String, x: Double, y: Double) {
+    @discardableResult
+    private func appendAnchor(label: String, x: Double, y: Double) -> Int {
         refreshDisplay()
         let eventLabel = normalizedEventLabel(label, fallback: "anchor-\(spatialEvents.count)")
         spatialEvents.append(
@@ -593,6 +661,7 @@ final class MotionRecorder: ObservableObject {
         anchorReminderNeeded = false
         lastSpatialEventMessage = String(format: "已记录锚点 %@ · (%.2f, %.2f)", eventLabel, x, y)
         recoveryStore?.updateSpatialEvents(spatialEvents)
+        return spatialEvents.count - 1
     }
 
     private func refreshNextRouteAnchor() {
@@ -604,8 +673,9 @@ final class MotionRecorder: ObservableObject {
         }
         hasNextRouteAnchor = true
         nextRouteAnchorDescription = String(
-            format: "下个路线点 %d · (%.2f, %.2f)",
-            nextRouteAnchorIndex,
+            format: "下个路线点 %d/%d · (%.2f, %.2f)",
+            nextRouteAnchorIndex + 1,
+            routeAnchorTotal,
             route[nextRouteAnchorIndex][0],
             route[nextRouteAnchorIndex][1]
         )

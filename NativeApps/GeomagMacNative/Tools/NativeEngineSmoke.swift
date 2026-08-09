@@ -29,7 +29,8 @@ struct NativeEngineSmoke {
                     activeStartTime: interval.confidence == "低" ? nil : interval.startTime,
                     activeEndTime: interval.confidence == "低" ? nil : interval.endTime,
                     settings: .optimized,
-                    magneticMap: map
+                    magneticMap: map,
+                    localizationMode: map.localizationMode
                 ),
                 progress: { _, _ in }
             )
@@ -40,7 +41,15 @@ struct NativeEngineSmoke {
             print(
                 key,
                 "steps=\(result.stepsDetected ?? 0)",
-                String(format: "pdr=%.3f pf=%.3f", result.pdrErrorStats?.mean ?? -1, result.pfErrorStats?.mean ?? -1),
+                String(
+                    format: "cross=%.3f/%.3f ratio=%.2f/%.2f close=%.3f/%.3f",
+                    result.pdrCrossTrackErrorStats?.mean ?? -1,
+                    result.pfCrossTrackErrorStats?.mean ?? -1,
+                    result.pdrPathLengthRatio ?? -1,
+                    result.pfPathLengthRatio ?? -1,
+                    result.pdrClosureErrorM ?? -1,
+                    result.pfClosureErrorM ?? -1
+                ),
                 "confidence=\(result.finalPFConfidence?.localizedLevel ?? "-")"
             )
             if let outputDirectory {

@@ -1,5 +1,28 @@
 import Foundation
 
+enum LocalizationMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case routeCorridorValidation = "route_corridor_validation"
+    case roomAreaKnownStart = "room_area_known_start"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .routeCorridorValidation: "已知路线验证"
+        case .roomAreaKnownStart: "房间自由定位（已知起点）"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .routeCorridorValidation:
+            "允许使用路线磁图的沿程、拐点和闭合约束，仅用于受控回归验证。"
+        case .roomAreaKnownStart:
+            "PF 不读取真实路线形状，只使用已知起点、显式初始航向、二维磁图和连续运动。"
+        }
+    }
+}
+
 struct GenericMagneticMapSample: Codable, Hashable, Sendable {
     let x: Double
     let y: Double
@@ -10,8 +33,56 @@ struct GenericMagneticMapSample: Codable, Hashable, Sendable {
     var varianceUT2: Double? = nil
     var observationCount: Int? = nil
     var directionCount: Int? = nil
+    var headingRadians: Double? = nil
     var gradientXUTPerM: Double? = nil
     var gradientYUTPerM: Double? = nil
+}
+
+enum MagneticMapCellStatus: String, Sendable {
+    case missing
+    case good
+    case sparse
+    case singleDirection
+    case noisy
+}
+
+struct MagneticMapQualityCell: Identifiable, Sendable {
+    let gridX: Int
+    let gridY: Int
+    let status: MagneticMapCellStatus
+    let observationCount: Int
+    let directionCount: Int
+    let varianceUT2: Double
+
+    var id: String { "\(gridX):\(gridY)" }
+}
+
+struct MagneticMapQualityReport: Sendable {
+    enum Grade: String, Sendable {
+        case excellent = "优秀"
+        case good = "可用"
+        case needsMoreData = "需要补采"
+        case poor = "质量不足"
+    }
+
+    let grade: Grade
+    let cells: [MagneticMapQualityCell]
+    let minimumGridX: Int
+    let maximumGridX: Int
+    let minimumGridY: Int
+    let maximumGridY: Int
+    let coveredCellCount: Int
+    let expectedCellCount: Int
+    let sparseCellCount: Int
+    let singleDirectionCellCount: Int
+    let noisyCellCount: Int
+    let medianObservationCount: Int
+    let messages: [String]
+
+    var coverageRatio: Double {
+        guard expectedCellCount > 0 else { return 0 }
+        return Double(coveredCellCount) / Double(expectedCellCount)
+    }
 }
 
 struct GenericMagneticMapDocument: Codable, Hashable, Identifiable, Sendable {
@@ -27,8 +98,18 @@ struct GenericMagneticMapDocument: Codable, Hashable, Identifiable, Sendable {
     let supportRadiusM: Double
     var coordinateFrame: String? = nil
     var gridCellSizeM: Double? = nil
+    /// True only when adjacent samples are consecutive positions on one
+    /// mapping trajectory. Grid maps leave this false.
+    var samplesFollowPath: Bool? = nil
+    /// Multiplier learned from known map anchors/route distance and the raw
+    /// Core Motion step model. It is applied to later captures before PF.
+    var pdrStepLengthScale: Double? = nil
 
     var sourceLabel: String { sourceDatasetKeys.joined(separator: ", ") }
+
+    var localizationMode: LocalizationMode {
+        samplesFollowPath == true ? .routeCorridorValidation : .roomAreaKnownStart
+    }
 
     var vectorSampleRatio: Double {
         guard !samples.isEmpty else { return 0 }
@@ -37,10 +118,123 @@ struct GenericMagneticMapDocument: Codable, Hashable, Identifiable, Sendable {
     }
 
     var gridCoverageRatio: Double? {
-        guard let cell = gridCellSizeM, let bounds else { return nil }
-        let columns = max(Int(ceil((bounds.maxX - bounds.minX) / cell)), 1)
-        let rows = max(Int(ceil((bounds.maxY - bounds.minY) / cell)), 1)
-        return min(Double(samples.count) / Double(columns * rows), 1)
+        guard gridCellSizeM != nil else { return nil }
+        return qualityReport?.coverageRatio
+    }
+
+    var qualityReport: MagneticMapQualityReport? {
+        guard samplesFollowPath != true,
+              let cell = gridCellSizeM,
+              cell.isFinite,
+              cell > 0,
+              !samples.isEmpty else { return nil }
+
+        struct Key: Hashable { let x: Int; let y: Int }
+        var keyed: [Key: GenericMagneticMapSample] = [:]
+        for sample in samples {
+            let key = Key(x: Int(floor(sample.x / cell)), y: Int(floor(sample.y / cell)))
+            if let existing = keyed[key],
+               (existing.observationCount ?? 0) >= (sample.observationCount ?? 0) { continue }
+            keyed[key] = sample
+        }
+        let referenceKeys = referenceRoute.map {
+            Key(x: Int(floor($0.x / cell)), y: Int(floor($0.y / cell)))
+        }
+        let boundsKeys = Array(keyed.keys) + referenceKeys
+        guard let minimumGridX = boundsKeys.map(\.x).min(),
+              let maximumGridX = boundsKeys.map(\.x).max(),
+              let minimumGridY = boundsKeys.map(\.y).min(),
+              let maximumGridY = boundsKeys.map(\.y).max() else { return nil }
+        let columns = maximumGridX - minimumGridX + 1
+        let rows = maximumGridY - minimumGridY + 1
+        let expected = columns * rows
+        guard expected > 0, expected <= 20_000 else { return nil }
+
+        var cells: [MagneticMapQualityCell] = []
+        var sparse = 0
+        var singleDirection = 0
+        var noisy = 0
+        for y in minimumGridY...maximumGridY {
+            for x in minimumGridX...maximumGridX {
+                guard let sample = keyed[Key(x: x, y: y)] else {
+                    cells.append(MagneticMapQualityCell(
+                        gridX: x, gridY: y, status: .missing,
+                        observationCount: 0, directionCount: 0, varianceUT2: 0
+                    ))
+                    continue
+                }
+                let observations = sample.observationCount ?? 0
+                let directions = sample.directionCount ?? 0
+                let variance = sample.varianceUT2 ?? 0
+                let status: MagneticMapCellStatus
+                if variance > 25 {
+                    status = .noisy
+                    noisy += 1
+                } else if observations < 12 {
+                    status = .sparse
+                    sparse += 1
+                } else if directions < 2 {
+                    status = .singleDirection
+                    singleDirection += 1
+                } else {
+                    status = .good
+                }
+                cells.append(MagneticMapQualityCell(
+                    gridX: x, gridY: y, status: status,
+                    observationCount: observations,
+                    directionCount: directions,
+                    varianceUT2: variance
+                ))
+            }
+        }
+
+        let covered = keyed.count
+        let coverage = Double(covered) / Double(expected)
+        let observationCounts = samples.compactMap(\.observationCount).sorted()
+        let medianObservations = observationCounts.isEmpty
+            ? 0 : observationCounts[observationCounts.count / 2]
+        let weakRatio = Double(sparse + noisy) / Double(max(covered, 1))
+        let grade: MagneticMapQualityReport.Grade
+        if coverage >= 0.80, weakRatio <= 0.10, medianObservations >= 20 {
+            grade = .excellent
+        } else if coverage >= 0.60, weakRatio <= 0.25, medianObservations >= 12 {
+            grade = .good
+        } else if coverage >= 0.35, weakRatio <= 0.45 {
+            grade = .needsMoreData
+        } else {
+            grade = .poor
+        }
+        var messages: [String] = []
+        if coverage < 0.60 {
+            messages.append("有效网格覆盖不足 60%，请补扫空白区域；固定障碍物内部可保持空白。")
+        }
+        if sparse > max(2, covered / 5) {
+            messages.append("低样本网格较多，请在对应区域放慢速度或增加一次采集。")
+        }
+        if noisy > max(1, covered / 10) {
+            messages.append("部分网格磁场方差较高，请检查移动金属、电器或手机姿态变化。")
+        }
+        if singleDirection > covered / 2 {
+            messages.append("多数网格只有单一行走方向，建议增加与当前方向垂直的扫描。")
+        }
+        if messages.isEmpty {
+            messages.append("覆盖、样本量和磁场稳定性均达到当前建图要求。")
+        }
+        return MagneticMapQualityReport(
+            grade: grade,
+            cells: cells,
+            minimumGridX: minimumGridX,
+            maximumGridX: maximumGridX,
+            minimumGridY: minimumGridY,
+            maximumGridY: maximumGridY,
+            coveredCellCount: covered,
+            expectedCellCount: expected,
+            sparseCellCount: sparse,
+            singleDirectionCellCount: singleDirection,
+            noisyCellCount: noisy,
+            medianObservationCount: medianObservations,
+            messages: messages
+        )
     }
 
     var bounds: CoordinateBounds? {
@@ -62,6 +256,7 @@ struct GenericMagneticMapDocument: Codable, Hashable, Identifiable, Sendable {
               supportRadiusM.isFinite,
               supportRadiusM > 0,
               gridCellSizeM.map({ $0.isFinite && $0 > 0 }) ?? true,
+              pdrStepLengthScale.map({ $0.isFinite && 0.2...2.0 ~= $0 }) ?? true,
               samples.allSatisfy({
                   $0.x.isFinite && $0.y.isFinite
                       && $0.magneticNormUT.isFinite
@@ -70,6 +265,7 @@ struct GenericMagneticMapDocument: Codable, Hashable, Identifiable, Sendable {
                       && [$0.magneticXUT, $0.magneticYUT, $0.magneticZUT]
                           .compactMap { $0 }.allSatisfy(\.isFinite)
                       && ($0.varianceUT2.map { $0.isFinite && $0 >= 0 } ?? true)
+                      && ($0.headingRadians?.isFinite ?? true)
                       && [$0.gradientXUTPerM, $0.gradientYUTPerM]
                           .compactMap { $0 }.allSatisfy(\.isFinite)
               }) else {
@@ -86,6 +282,7 @@ enum GenericMagneticMapStore {
         case duplicateMap(String)
         case builtInMapCannotBeRemoved
         case incompatibleMaps
+        case duplicateSourceDataset(String)
 
         var errorDescription: String? {
             switch self {
@@ -94,6 +291,7 @@ enum GenericMagneticMapStore {
             case let .duplicateMap(name): "已经存在名为 \(name) 的磁图，请先删除或改名。"
             case .builtInMapCannotBeRemoved: "内置示例磁图不能删除。"
             case .incompatibleMaps: "两次采集的磁图名称、坐标系或网格尺寸不一致，不能合并。"
+            case let .duplicateSourceDataset(key): "采集 \(key) 已经加入该磁图，不能重复合并。"
             }
         }
     }
@@ -151,6 +349,9 @@ enum GenericMagneticMapStore {
               abs((lhs.gridCellSizeM ?? 0.4) - (rhs.gridCellSizeM ?? 0.4)) < 1e-6 else {
             throw StoreError.incompatibleMaps
         }
+        if let duplicate = Set(lhs.sourceDatasetKeys).intersection(rhs.sourceDatasetKeys).first {
+            throw StoreError.duplicateSourceDataset(duplicate)
+        }
         let cell = lhs.gridCellSizeM ?? rhs.gridCellSizeM ?? 0.4
         struct Key: Hashable { let x: Int; let y: Int }
         var grouped: [Key: [GenericMagneticMapSample]] = [:]
@@ -180,6 +381,11 @@ enum GenericMagneticMapStore {
             let variance = optionalMedian(values.map(\.varianceUT2))
             let observations = values.compactMap(\.observationCount).reduce(0, +)
             let directions = min(values.compactMap(\.directionCount).reduce(0, +), 8)
+            let headings = values.compactMap(\.headingRadians)
+            let heading = headings.isEmpty ? nil : atan2(
+                headings.map(sin).reduce(0, +),
+                headings.map(cos).reduce(0, +)
+            )
             let gradientX = optionalMedian(values.map(\.gradientXUTPerM))
             let gradientY = optionalMedian(values.map(\.gradientYUTPerM))
             var sample = GenericMagneticMapSample(x: x, y: y, magneticNormUT: norm)
@@ -189,12 +395,24 @@ enum GenericMagneticMapStore {
             sample.varianceUT2 = variance
             sample.observationCount = observations
             sample.directionCount = directions
+            sample.headingRadians = heading
             sample.gradientXUTPerM = gradientX
             sample.gradientYUTPerM = gradientY
             mergedSamples.append(sample)
         }
         mergedSamples.sort { lhs, rhs in
             lhs.y == rhs.y ? lhs.x < rhs.x : lhs.y < rhs.y
+        }
+        let availableScales = [lhs.pdrStepLengthScale, rhs.pdrStepLengthScale]
+            .compactMap { $0 }
+            .sorted()
+        let mergedStepScale: Double? = if availableScales.isEmpty {
+            nil
+        } else if availableScales.count.isMultiple(of: 2) {
+            (availableScales[availableScales.count / 2 - 1]
+                + availableScales[availableScales.count / 2]) / 2
+        } else {
+            availableScales[availableScales.count / 2]
         }
         return try GenericMagneticMapDocument(
             schemaVersion: GenericMagneticMapDocument.schemaVersion,
@@ -206,8 +424,48 @@ enum GenericMagneticMapStore {
             samples: mergedSamples,
             supportRadiusM: max(lhs.supportRadiusM, rhs.supportRadiusM),
             coordinateFrame: lhs.coordinateFrame,
-            gridCellSizeM: cell
+            gridCellSizeM: cell,
+            pdrStepLengthScale: mergedStepScale
         ).validated()
+    }
+
+    static func mergeQualityWarnings(
+        _ existing: GenericMagneticMapDocument,
+        with addition: GenericMagneticMapDocument
+    ) -> [String] {
+        let cell = existing.gridCellSizeM ?? addition.gridCellSizeM ?? 0.4
+        struct Key: Hashable { let x: Int; let y: Int }
+        func keyed(_ document: GenericMagneticMapDocument) -> [Key: GenericMagneticMapSample] {
+            var result: [Key: GenericMagneticMapSample] = [:]
+            for sample in document.samples {
+                let key = Key(x: Int(floor(sample.x / cell)), y: Int(floor(sample.y / cell)))
+                if let existing = result[key],
+                   (existing.observationCount ?? 0) >= (sample.observationCount ?? 0) { continue }
+                result[key] = sample
+            }
+            return result
+        }
+        let lhs = keyed(existing)
+        let rhs = keyed(addition)
+        let overlap = Set(lhs.keys).intersection(rhs.keys)
+        var warnings: [String] = []
+        let minimumUsefulOverlap = max(5, min(lhs.count, rhs.count) / 10)
+        if overlap.count < minimumUsefulOverlap {
+            warnings.append("两次建图只有 \(overlap.count) 个重叠网格，请确认坐标原点和扫描区域一致。")
+        }
+        let normDifferences = overlap.compactMap { key -> Double? in
+            guard let left = lhs[key], let right = rhs[key] else { return nil }
+            return abs(left.magneticNormUT - right.magneticNormUT)
+        }.sorted()
+        if let medianDifference = normDifferences.isEmpty
+            ? nil : normDifferences[normDifferences.count / 2],
+           medianDifference > 8 {
+            warnings.append(String(
+                format: "重叠网格磁场模长中位差 %.1f µT，可能存在姿态、设备或环境变化。",
+                medianDifference
+            ))
+        }
+        return warnings
     }
 
     static func directoryURL(createIfNeeded: Bool) throws -> URL {

@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @State private var isPlaying = false
     @State private var showFullLog = false
+    @State private var showMagneticMapQuality = false
 
     private let timer = Timer.publish(every: 0.04, on: .main, in: .common).autoconnect()
 
@@ -45,6 +46,11 @@ struct ContentView: View {
                 copyAction: model.copyBackendLog,
                 clearAction: model.clearBackendLog
             )
+        }
+        .sheet(isPresented: $showMagneticMapQuality) {
+            if let map = model.selectedMagneticMap {
+                MagneticMapQualitySheet(document: map.document)
+            }
         }
         .onReceive(timer) { _ in
             guard isPlaying else { return }
@@ -190,6 +196,15 @@ struct ContentView: View {
                     )
 
                     if let map = model.selectedMagneticMap {
+                        Label(map.document.localizationMode.title, systemImage: "location.viewfinder")
+                            .font(.caption)
+                            .foregroundStyle(
+                                map.document.localizationMode == .roomAreaKnownStart
+                                    ? .blue : .orange
+                            )
+                        Text(map.document.localizationMode.summary)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                         Label(
                             "参考采集：\(map.document.sourceLabel) · \(map.document.samples.count) 个网格"
                                 + (map.document.gridCoverageRatio.map {
@@ -199,6 +214,25 @@ struct ContentView: View {
                         )
                         .font(.caption)
                         .foregroundStyle(.green)
+
+                        if let quality = map.document.qualityReport {
+                            Label(
+                                "建图质量：\(quality.grade.rawValue) · "
+                                    + "缺失 \(quality.expectedCellCount - quality.coveredCellCount) 格",
+                                systemImage: quality.grade == .poor
+                                    ? "exclamationmark.triangle.fill" : "checkmark.shield.fill"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(quality.grade == .poor ? .red : .secondary)
+
+                            Button {
+                                showMagneticMapQuality = true
+                            } label: {
+                                Label("查看二维覆盖热力图与质量", systemImage: "square.grid.3x3.fill")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
 
                     if model.runInputMode == .imported {
@@ -349,14 +383,28 @@ struct ContentView: View {
                         if let stepScale = result.stepLengthScale {
                             infoRow("步长比例", number(stepScale))
                         }
+                        if let score = result.overallPFConfidenceScore,
+                           let level = result.overallPFConfidenceLevel {
+                            infoRow(
+                                "PF 全程可靠度",
+                                "\(level) · \(Int((score * 100).rounded()))%"
+                            )
+                        }
                         if let confidence = result.finalPFConfidence {
                             infoRow(
-                                "PF 可靠度",
+                                "PF 终点可靠度",
                                 "\(confidence.localizedLevel) · \(Int((confidence.score * 100).rounded()))%"
                             )
                             infoRow(
                                 "核心粒子范围",
                                 "r80 \(meters(confidence.coreRadius80M ?? confidence.radius95M))"
+                            )
+                        }
+                        if let mean = result.meanPFGlobalAmbiguity,
+                           let maximum = result.maximumPFGlobalAmbiguity {
+                            infoRow(
+                                "全程位置歧义",
+                                "平均 \(Int((mean * 100).rounded()))% · 峰值 \(Int((maximum * 100).rounded()))%"
                             )
                         }
                         if let health = result.finalLocalizationHealth {
@@ -450,33 +498,44 @@ struct ContentView: View {
     }
 
     private func metrics(for result: PositioningResult) -> some View {
-        HStack(spacing: 12) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
             MetricCard(
-                title: "PF 平均误差",
-                value: meters(result.pfErrorStats?.mean),
-                detail: "P95 \(meters(result.pfErrorStats?.p95))",
+                title: "PF 横向误差",
+                value: meters(result.pfCrossTrackErrorStats?.mean),
+                detail: "PDR \(meters(result.pdrCrossTrackErrorStats?.mean))",
                 color: Color(red: 1.0, green: 0.78, blue: 0.16)
+            )
+            MetricCard(
+                title: "PF 沿程误差",
+                value: meters(result.pfAlongTrackErrorStats?.mean),
+                detail: "PDR \(meters(result.pdrAlongTrackErrorStats?.mean))",
+                color: .purple
+            )
+            MetricCard(
+                title: "PF 转角误差",
+                value: degrees(result.pfTurnAngleErrorStats?.mean),
+                detail: "PDR \(degrees(result.pdrTurnAngleErrorStats?.mean))",
+                color: .orange
             )
             MetricCard(
                 title: "PF 终点误差",
                 value: meters(result.pfErrorStats?.final),
-                detail: "中位数 \(meters(result.pfErrorStats?.median))",
+                detail: "PDR \(meters(result.pdrErrorStats?.final))",
                 color: Color(red: 1.0, green: 0.78, blue: 0.16)
             )
             MetricCard(
-                title: "PDR 平均误差",
-                value: meters(result.pdrErrorStats?.mean),
-                detail: "P95 \(meters(result.pdrErrorStats?.p95))",
+                title: "PF 路程比例",
+                value: ratio(result.pfPathLengthRatio),
+                detail: "PDR \(ratio(result.pdrPathLengthRatio))",
                 color: Color(red: 0.10, green: 0.84, blue: 0.92)
             )
             MetricCard(
-                title: "检测步数",
-                value: value(result.stepsDetected),
-                detail: "\(result.sensorFramesUsed ?? 0) 个传感器帧",
+                title: "PF 闭合误差",
+                value: meters(result.pfClosureErrorM),
+                detail: "PDR \(meters(result.pdrClosureErrorM)) · \(value(result.stepsDetected)) 步",
                 color: .green
             )
         }
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func sidebarSection<Content: View>(
@@ -830,6 +889,16 @@ struct ContentView: View {
         return String(format: "%.2f m", value)
     }
 
+    private func ratio(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return String(format: "%.0f%%", value * 100)
+    }
+
+    private func degrees(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return String(format: "%.1f°", value)
+    }
+
     private func number(_ value: Double) -> String {
         String(format: value.rounded() == value ? "%.0f" : "%.2f", value)
     }
@@ -840,6 +909,135 @@ struct ContentView: View {
 
     private func runDate(_ date: Date) -> String {
         date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+private struct MagneticMapQualitySheet: View {
+    let document: GenericMagneticMapDocument
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("二维磁图覆盖与质量")
+                        .font(.title2.weight(.semibold))
+                    Text(document.name + " · " + document.sourceLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            if let quality = document.qualityReport {
+                HStack(spacing: 10) {
+                    qualityMetric("综合质量", quality.grade.rawValue)
+                    qualityMetric("有效覆盖", "\(Int((quality.coverageRatio * 100).rounded()))%")
+                    qualityMetric("有效/总网格", "\(quality.coveredCellCount)/\(quality.expectedCellCount)")
+                    qualityMetric("每格样本中位数", "\(quality.medianObservationCount)")
+                }
+
+                MagneticMapHeatmap(report: quality)
+                    .frame(minHeight: 300)
+
+                HStack(spacing: 18) {
+                    legend("质量良好", .green)
+                    legend("单一方向", .blue)
+                    legend("样本不足", .orange)
+                    legend("高方差", .red)
+                    legend("缺失/障碍", .gray.opacity(0.35))
+                }
+                .font(.caption)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(quality.messages, id: \.self) { message in
+                        Label(message, systemImage: "info.circle")
+                    }
+                    Text("灰色空洞不会被 PF 当作可定位区域。桌子、沙发等固定障碍内部保留为空白是正确结果；重点补扫障碍物四周仍可行走的区域。")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "square.grid.3x3")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.secondary)
+                    Text("没有二维网格质量数据")
+                        .font(.headline)
+                    Text("路线磁图不生成房间覆盖热力图。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 780, minHeight: 600)
+    }
+
+    private func qualityMetric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.title3.weight(.semibold).monospacedDigit())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func legend(_ title: String, _ color: Color) -> some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 13, height: 13)
+            Text(title)
+        }
+    }
+}
+
+private struct MagneticMapHeatmap: View {
+    let report: MagneticMapQualityReport
+
+    var body: some View {
+        Canvas { context, size in
+            let columns = max(report.maximumGridX - report.minimumGridX + 1, 1)
+            let rows = max(report.maximumGridY - report.minimumGridY + 1, 1)
+            let padding = 14.0
+            let availableWidth = max(size.width - 2 * padding, 1)
+            let availableHeight = max(size.height - 2 * padding, 1)
+            let cellSize = min(availableWidth / Double(columns), availableHeight / Double(rows))
+            let gridWidth = cellSize * Double(columns)
+            let gridHeight = cellSize * Double(rows)
+            let originX = (size.width - gridWidth) / 2
+            let originY = (size.height - gridHeight) / 2
+
+            for cell in report.cells {
+                let column = cell.gridX - report.minimumGridX
+                let row = report.maximumGridY - cell.gridY
+                let rect = CGRect(
+                    x: originX + Double(column) * cellSize + 0.7,
+                    y: originY + Double(row) * cellSize + 0.7,
+                    width: max(cellSize - 1.4, 1),
+                    height: max(cellSize - 1.4, 1)
+                )
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: min(cellSize * 0.15, 3)),
+                    with: .color(color(for: cell.status))
+                )
+            }
+        }
+        .background(Color.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityLabel("二维地磁图覆盖热力图")
+    }
+
+    private func color(for status: MagneticMapCellStatus) -> Color {
+        switch status {
+        case .missing: .gray.opacity(0.26)
+        case .good: .green.opacity(0.88)
+        case .sparse: .orange.opacity(0.92)
+        case .singleDirection: .blue.opacity(0.88)
+        case .noisy: .red.opacity(0.92)
+        }
     }
 }
 

@@ -26,7 +26,8 @@ struct ImportedCaptureSmoke {
                 activeStartTime: interval.confidence == "低" ? nil : interval.startTime,
                 activeEndTime: interval.confidence == "低" ? nil : interval.endTime,
                 settings: .optimized,
-                magneticMap: map
+                magneticMap: map,
+                localizationMode: map.localizationMode
             ),
             progress: { _, _ in }
         )

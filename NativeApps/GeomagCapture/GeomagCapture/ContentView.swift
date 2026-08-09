@@ -17,6 +17,9 @@ struct ContentView: View {
     @State private var roomHeightText = "8"
     @State private var scanSpacingText = "0.5"
     @State private var isExporting = false
+    @State private var confirmNextRouteAnchor = false
+    @State private var confirmSkipRouteAnchor = false
+    @State private var confirmIncompleteStop = false
 
     var body: some View {
         NavigationStack {
@@ -58,6 +61,43 @@ struct ContentView: View {
                 case let .failure(error):
                     recorder.reportExportError(error)
                 }
+            }
+            .confirmationDialog(
+                "确认已到达路线点？",
+                isPresented: $confirmNextRouteAnchor,
+                titleVisibility: .visible
+            ) {
+                Button("确认记录") {
+                    recorder.markNextRouteAnchor(label: eventLabel)
+                    eventLabel = ""
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text(recorder.nextRouteAnchorDescription)
+            }
+            .confirmationDialog(
+                "跳过不可到达的路线点？",
+                isPresented: $confirmSkipRouteAnchor,
+                titleVisibility: .visible
+            ) {
+                Button("确认跳过", role: .destructive) {
+                    recorder.skipNextRouteAnchor()
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("请先暂停建图，再跳过障碍物占据的点。暂停区间不会被 macOS 插值成有效覆盖。")
+            }
+            .confirmationDialog(
+                "还有路线锚点未完成",
+                isPresented: $confirmIncompleteStop,
+                titleVisibility: .visible
+            ) {
+                Button("仍然停止", role: .destructive) {
+                    Task { await recorder.stopRecording() }
+                }
+                Button("继续采集", role: .cancel) {}
+            } message: {
+                Text("未完成的锚点会降低二维磁图覆盖率。确认数据确实采集完毕后再停止。")
             }
         }
     }
@@ -180,7 +220,10 @@ struct ContentView: View {
 
             if recorder.routeAnchorTotal > 0 {
                 ProgressView(value: recorder.routeCoverage)
-                Text("扫描锚点 \(recorder.routeAnchorCompleted)/\(recorder.routeAnchorTotal)")
+                Text(
+                    "扫描点进度 \(recorder.routeAnchorCompleted)/\(recorder.routeAnchorTotal)"
+                        + (recorder.routeAnchorSkipped > 0 ? " · 已跳过 \(recorder.routeAnchorSkipped)" : "")
+                )
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -230,8 +273,7 @@ struct ContentView: View {
 
                 if recorder.hasNextRouteAnchor {
                     Button {
-                        recorder.markNextRouteAnchor(label: eventLabel)
-                        eventLabel = ""
+                        confirmNextRouteAnchor = true
                     } label: {
                         Label(
                             recorder.nextRouteAnchorDescription,
@@ -241,6 +283,26 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.indigo)
+                    .disabled(recorder.isPaused)
+
+                    HStack {
+                        Button {
+                            recorder.undoLastRouteAnchor()
+                        } label: {
+                            Label("撤销上个路线点", systemImage: "arrow.uturn.backward")
+                        }
+                        .disabled(!recorder.canUndoLastRouteAnchor || recorder.isPaused)
+
+                        Spacer()
+
+                        Button(role: .destructive) {
+                            confirmSkipRouteAnchor = true
+                        } label: {
+                            Label("障碍物：跳过此点", systemImage: "nosign")
+                        }
+                        .disabled(!recorder.isPaused)
+                    }
+                    .font(.caption)
                 }
             } else {
                 Text("开始采集后，可在经过已知坐标或转弯中心时立即标记。")
@@ -317,7 +379,11 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
 
                 Button {
-                    Task { await recorder.stopRecording() }
+                    if recorder.hasIncompleteRouteAnchors {
+                        confirmIncompleteStop = true
+                    } else {
+                        Task { await recorder.stopRecording() }
+                    }
                 } label: {
                     Label("停止并保存", systemImage: "stop.circle.fill")
                         .frame(maxWidth: .infinity)
@@ -386,6 +452,16 @@ struct ContentView: View {
             guidance("到达终点后保持静止约 3 秒，再点击停止。")
             guidance("经过已知坐标时点“记录坐标锚点”；转弯中心至少点“标记转角”。")
             guidance("房间建图建议横向、纵向各扫描一遍，线距 0.4～0.6 m；同一区域重复 2～3 次。")
+            if mappingMode {
+                Divider()
+                Label("遇到桌子、沙发等障碍物", systemImage: "exclamationmark.triangle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+                guidance("① 在障碍物前的已知位置记录坐标锚点，然后点击“暂停建图”。")
+                guidance("② 保持暂停并绕到障碍物另一侧；如果下个预设路线点本身不可到达，再点“障碍物：跳过此点”。")
+                guidance("③ 到达另一侧已知位置后点击“恢复建图”，立即记录新的坐标锚点。")
+                guidance("④ 沿障碍物可行走边缘补扫；不要搬动家具，也不要把障碍物内部当作已覆盖区域。")
+            }
             guidance("采集期间保持屏幕点亮，不要切到后台。")
             Text("模拟器没有运动传感器；请在 Xcode 中选择已连接的真实 iPhone。")
                 .font(.caption)

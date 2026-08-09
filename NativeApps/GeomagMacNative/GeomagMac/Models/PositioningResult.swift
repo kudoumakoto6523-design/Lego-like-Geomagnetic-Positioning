@@ -273,6 +273,16 @@ struct PositioningResult: Codable {
     let pfErrorStats: ErrorStatistics?
     let controlledCrossTrackErrorStats: ErrorStatistics?
     let closureErrorM: Double?
+    let pdrCrossTrackErrorStats: ErrorStatistics?
+    let pfCrossTrackErrorStats: ErrorStatistics?
+    let pdrAlongTrackErrorStats: ErrorStatistics?
+    let pfAlongTrackErrorStats: ErrorStatistics?
+    let pdrTurnAngleErrorStats: ErrorStatistics?
+    let pfTurnAngleErrorStats: ErrorStatistics?
+    let pdrPathLengthRatio: Double?
+    let pfPathLengthRatio: Double?
+    let pdrClosureErrorM: Double?
+    let pfClosureErrorM: Double?
     let stepsDetected: Int?
     let sensorFramesUsed: Int?
     let fullSensorFrames: Int?
@@ -303,6 +313,16 @@ struct PositioningResult: Codable {
         case pfErrorStats = "pf_error_stats"
         case controlledCrossTrackErrorStats = "controlled_cross_track_error_stats"
         case closureErrorM = "closure_error_m"
+        case pdrCrossTrackErrorStats = "pdr_cross_track_error_stats"
+        case pfCrossTrackErrorStats = "pf_cross_track_error_stats"
+        case pdrAlongTrackErrorStats = "pdr_along_track_error_stats"
+        case pfAlongTrackErrorStats = "pf_along_track_error_stats"
+        case pdrTurnAngleErrorStats = "pdr_turn_angle_error_stats_deg"
+        case pfTurnAngleErrorStats = "pf_turn_angle_error_stats_deg"
+        case pdrPathLengthRatio = "pdr_path_length_ratio"
+        case pfPathLengthRatio = "pf_path_length_ratio"
+        case pdrClosureErrorM = "pdr_closure_error_m"
+        case pfClosureErrorM = "pf_closure_error_m"
         case stepsDetected = "steps_detected"
         case sensorFramesUsed = "sensor_frames_used"
         case fullSensorFrames = "full_sensor_frames"
@@ -331,6 +351,27 @@ extension PositioningResult {
 
     var finalPFConfidence: PFConfidenceSample? {
         pfConfidenceHistory?.last
+    }
+
+    var overallPFConfidenceScore: Double? {
+        guard let history = pfConfidenceHistory, !history.isEmpty else { return nil }
+        return history.reduce(0.0) { $0 + $1.score } / Double(history.count)
+    }
+
+    var overallPFConfidenceLevel: String? {
+        overallPFConfidenceScore.map { score in
+            score >= 0.75 ? "高" : score >= 0.45 ? "中" : "低"
+        }
+    }
+
+    var meanPFGlobalAmbiguity: Double? {
+        let values = pfConfidenceHistory?.compactMap(\.globalAmbiguity) ?? []
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    var maximumPFGlobalAmbiguity: Double? {
+        pfConfidenceHistory?.compactMap(\.globalAmbiguity).max()
     }
 
     var finalLocalizationHealth: LocalizationHealthSample? {

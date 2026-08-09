@@ -63,6 +63,7 @@ final class AppModel: ObservableObject {
         let activeStartTime: Double?
         let activeEndTime: Double?
         let magneticMap: GenericMagneticMapDocument
+        let localizationMode: LocalizationMode
         let logDescription: String
     }
 
@@ -137,10 +138,24 @@ final class AppModel: ObservableObject {
         magneticMaps.first { $0.id == selectedMagneticMapID }
     }
 
+    var selectedMagneticMapQuality: MagneticMapQualityReport? {
+        selectedMagneticMap?.document.qualityReport
+    }
+
     var mapForCurrentSelection: GenericMagneticMapStore.Entry? {
         if runInputMode == .imported { return selectedMagneticMap }
         let group = Self.datasetGroup(selectedRunDatasetID)
         return magneticMaps.first { $0.document.id == group }
+    }
+
+    var currentLocalizationMode: LocalizationMode? {
+        mapForCurrentSelection?.document.localizationMode
+    }
+
+    var roomModeHasExplicitInitialHeading: Bool {
+        guard currentLocalizationMode == .roomAreaKnownStart else { return true }
+        let text = customInitialHeadingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Double(text)?.isFinite == true
     }
 
     var selectedMapUsesCurrentDataset: Bool {
@@ -153,7 +168,12 @@ final class AppModel: ObservableObject {
         guard runInputMode == .imported, let mapFrame = selectedMagneticMap?.document.coordinateFrame else {
             return true
         }
-        return importedDataset?.coordinateFrame == mapFrame
+        guard let datasetFrame = importedDataset?.coordinateFrame else {
+            // Older route captures do not contain coordinate_frame. Their manually
+            // entered route is already validated against the selected path map.
+            return selectedMagneticMap?.document.samplesFollowPath == true
+        }
+        return datasetFrame == mapFrame
     }
 
     var canRunSelectedDataset: Bool {
@@ -163,6 +183,7 @@ final class AppModel: ObservableObject {
             return importedDatasetReady
                 && routeMapValidation.isValid
                 && coordinateFrameMatchesSelectedMap
+                && roomModeHasExplicitInitialHeading
                 && !map.document.sourceDatasetKeys.contains(
                     customDatasetName.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
@@ -182,6 +203,9 @@ final class AppModel: ObservableObject {
         }
         if runInputMode == .imported, !coordinateFrameMatchesSelectedMap {
             return "采集坐标系与所选房间磁图不一致"
+        }
+        if runInputMode == .imported, !roomModeHasExplicitInitialHeading {
+            return "房间自由定位必须填写已知初始航向；真实路线只用于结果评估"
         }
         if runInputMode == .imported, !routeMapValidation.isValid {
             return "真实路线超出所选地磁图的覆盖范围；可以改选磁图或用当前采集建立新磁图"
@@ -320,11 +344,13 @@ final class AppModel: ObservableObject {
                 activeStartTime: request.activeStartTime,
                 activeEndTime: request.activeEndTime,
                 settings: algorithmSettings,
-                magneticMap: request.magneticMap
+                magneticMap: request.magneticMap,
+                localizationMode: request.localizationMode
             )
 
             backendLog = "引擎: 纯原生 Swift\n"
                 + "算法: PDR + 标量地磁粒子滤波（运行时无 Python）\n"
+                + "定位模式: \(request.localizationMode.title)\n"
                 + "数据: \(request.datasetKey)\n"
                 + request.logDescription
                 + "预设: \(selectedAlgorithmPreset.title)\n"
@@ -475,7 +501,12 @@ final class AppModel: ObservableObject {
                 )
             }
             let savedDocument: GenericMagneticMapDocument
+            var mergeWarnings: [String] = []
             if let existingEntry {
+                mergeWarnings = GenericMagneticMapStore.mergeQualityWarnings(
+                    existingEntry.document,
+                    with: document
+                )
                 savedDocument = try GenericMagneticMapStore.merging(
                     existingEntry.document,
                     with: document
@@ -485,15 +516,22 @@ final class AppModel: ObservableObject {
                 savedDocument = document
                 _ = try GenericMagneticMapStore.save(savedDocument)
             }
-            return savedDocument
+            return (savedDocument, mergeWarnings)
         }
         Task { [weak self] in
             guard let self else { return }
             do {
-                let document = try await job.value
+                let (document, mergeWarnings) = try await job.value
                 self.isMagneticMapBuilding = false
                 self.refreshMagneticMaps(selecting: document.id)
-                self.magneticMapStatus = "磁图已建立；请导入同一区域的第二次或后续采集进行定位"
+                if let quality = document.qualityReport {
+                    let summary = "质量\(quality.grade.rawValue) · 覆盖约 "
+                        + "\(Int((quality.coverageRatio * 100).rounded()))%"
+                    self.magneticMapStatus = ([summary] + mergeWarnings + quality.messages.prefix(1))
+                        .joined(separator: " · ")
+                } else {
+                    self.magneticMapStatus = "路线磁图已建立；请导入独立采集进行验证"
+                }
             } catch {
                 self.isMagneticMapBuilding = false
                 self.magneticMapStatus = "磁图建立失败"
@@ -704,6 +742,7 @@ final class AppModel: ObservableObject {
                 activeStartTime: activeInterval.confidence == "低" ? nil : activeInterval.startTime,
                 activeEndTime: activeInterval.confidence == "低" ? nil : activeInterval.endTime,
                 magneticMap: selectedMap.document,
+                localizationMode: selectedMap.document.localizationMode,
                 logDescription: "来源: App 内置原始传感器 CSV\n"
                     + "路线: \(Self.routeText(route))\n"
                     + "地磁图: \(selectedMap.document.name)\n"
@@ -720,9 +759,14 @@ final class AppModel: ObservableObject {
         if selectedMap.document.sourceDatasetKeys.contains(datasetKey) {
             throw RunPreparationError.mapSourceCannotLocateItself
         }
-        if let mapFrame = selectedMap.document.coordinateFrame,
-           importedDataset.coordinateFrame != mapFrame {
-            throw RunPreparationError.coordinateFrameMismatch
+        if let mapFrame = selectedMap.document.coordinateFrame {
+            if let datasetFrame = importedDataset.coordinateFrame {
+                guard datasetFrame == mapFrame else {
+                    throw RunPreparationError.coordinateFrameMismatch
+                }
+            } else if selectedMap.document.samplesFollowPath != true {
+                throw RunPreparationError.coordinateFrameMismatch
+            }
         }
         guard let normalizedRoute = DatasetValidator.normalizedRouteText(customRouteText) else {
             throw RunPreparationError.invalidRoute
@@ -766,6 +810,7 @@ final class AppModel: ObservableObject {
             activeStartTime: activeStartTime,
             activeEndTime: activeEndTime,
             magneticMap: selectedMap.document,
+            localizationMode: selectedMap.document.localizationMode,
             logDescription: "来源: \(importedDataset.directoryURL.path)\n"
                 + "有效帧: 约 \(importedDataset.estimatedFrameCount)，时间重叠: "
                 + String(format: "%.2f 秒\n", importedDataset.overlapDuration)

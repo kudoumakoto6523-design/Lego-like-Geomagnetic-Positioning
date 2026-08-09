@@ -90,7 +90,7 @@ enum ResultExporter {
         var lines = [
             "series,index,x_m,y_m,radius95_m,core_radius80_m,"
                 + "confidence_score,confidence_level,measurement_information,"
-                + "localization_status,recovery_action"
+                + "global_ambiguity,localization_status,recovery_action"
         ]
         appendCSVRows(
             series: "true_route",
@@ -173,6 +173,7 @@ enum ResultExporter {
                     + "\(item.map { decimal($0.score) } ?? ""),"
                     + "\(item?.level ?? ""),"
                     + "\(item.flatMap { $0.measurementInformation }.map(decimal) ?? ""),"
+                    + "\(item.flatMap { $0.globalAmbiguity }.map(decimal) ?? ""),"
                     + "\(healthItem?.status ?? ""),"
                     + "\(healthItem?.action ?? "")"
             )
@@ -494,21 +495,24 @@ enum ResultExporter {
             ]
         } else {
             metrics = [
-                "PF 平均误差  \(meters(result.pfErrorStats?.mean))",
+                "PF 横向误差  \(meters(result.pfCrossTrackErrorStats?.mean))",
+                "PF 沿程误差  \(meters(result.pfAlongTrackErrorStats?.mean))",
+                "PF 转角误差  \(degrees(result.pfTurnAngleErrorStats?.mean))",
                 "PF 终点误差  \(meters(result.pfErrorStats?.final))",
-                "PDR 平均误差  \(meters(result.pdrErrorStats?.mean))",
-                "定位点  \(result.pfTrack.count)",
+                "PF 路程比例  \(percent(result.pfPathLengthRatio))",
+                "PF 闭合误差  \(meters(result.pfClosureErrorM))",
             ]
         }
-        var x = origin.x
-        for metric in metrics {
+        for (index, metric) in metrics.enumerated() {
             drawText(
                 metric,
-                at: CGPoint(x: x, y: origin.y),
+                at: CGPoint(
+                    x: origin.x + CGFloat(index % 3) * 480,
+                    y: origin.y + CGFloat(index / 3) * 38
+                ),
                 font: .monospacedDigitSystemFont(ofSize: 19, weight: .medium),
                 color: NSColor.white.withAlphaComponent(0.76)
             )
-            x += 365
         }
     }
 
@@ -532,8 +536,18 @@ enum ResultExporter {
         return String(format: "%.2f m", value)
     }
 
+    private static func percent(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return String(format: "%.0f%%", value * 100)
+    }
+
     private static func signedDegrees(_ value: Double?) -> String {
         guard let value else { return "—" }
         return String(format: "%+.2f°", value)
+    }
+
+    private static func degrees(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return String(format: "%.1f°", value)
     }
 }

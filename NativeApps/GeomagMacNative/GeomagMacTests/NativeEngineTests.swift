@@ -2,6 +2,21 @@ import XCTest
 @testable import GeomagMac
 
 final class NativeEngineTests: XCTestCase {
+    func testTurnContinuityGuardSuppressesSidewaysModeJumpWithoutMapCorner() {
+        let previous = XYPoint(x: 5.8, y: 4.8)
+        let raw = XYPoint(x: 5.57, y: 4.77)
+        let corrected = NativePositioningEngine.constrainedTurnDeparture(
+            raw,
+            previous: previous,
+            heading: -.pi / 2,
+            stepLength: 0.30
+        )
+
+        XCTAssertEqual(corrected.x, previous.x, accuracy: 1e-9)
+        XCTAssertLessThan(corrected.y, previous.y)
+        XCTAssertGreaterThanOrEqual(corrected.y, previous.y - 0.45)
+    }
+
     func testRoute13HeldOutCaptureProducesRealPFAndConfidence() throws {
         let result = try runBundledQuery(key: "route_13_3")
 
@@ -9,7 +24,14 @@ final class NativeEngineTests: XCTestCase {
         XCTAssertEqual(result.pfTrack.count, (result.stepsDetected ?? 0) + 1)
         XCTAssertEqual(result.pfConfidenceHistory?.count, result.stepsDetected)
         XCTAssertFalse(result.pfTrack.isEmpty)
-        XCTAssertLessThan(result.pfErrorStats?.mean ?? .infinity, result.pdrErrorStats?.mean ?? 0)
+        XCTAssertLessThan(
+            result.pfCrossTrackErrorStats?.mean ?? .infinity,
+            result.pdrCrossTrackErrorStats?.mean ?? 0
+        )
+        XCTAssertTrue(0.70...1.30 ~= (result.pfPathLengthRatio ?? 0))
+        XCTAssertLessThan(result.pfClosureErrorM ?? .infinity, 0.60)
+        XCTAssertNotNil(result.pfAlongTrackErrorStats)
+        XCTAssertLessThan(result.pfTurnAngleErrorStats?.mean ?? .infinity, 30)
         XCTAssertNil(result.controlledMotionDiagnostics)
         XCTAssertNil(result.magneticFusionDiagnostics)
     }
@@ -19,8 +41,20 @@ final class NativeEngineTests: XCTestCase {
 
         XCTAssertEqual(result.pfTrack.count, (result.stepsDetected ?? 0) + 1)
         XCTAssertEqual(result.pfConfidenceHistory?.count, result.stepsDetected)
-        XCTAssertLessThan(result.pfErrorStats?.mean ?? .infinity, result.pdrErrorStats?.mean ?? 0)
+        XCTAssertLessThan(
+            result.pfCrossTrackErrorStats?.mean ?? .infinity,
+            result.pdrCrossTrackErrorStats?.mean ?? 0
+        )
+        XCTAssertTrue(0.70...1.30 ~= (result.pfPathLengthRatio ?? 0))
+        XCTAssertLessThan(result.pfClosureErrorM ?? .infinity, 0.20)
+        XCTAssertNotNil(result.pfAlongTrackErrorStats)
+        XCTAssertLessThan(result.pfTurnAngleErrorStats?.mean ?? .infinity, 45)
         XCTAssertNotNil(result.finalPFConfidence)
+        let map = try loadBundledMap(group: "route_15")
+        XCTAssertGreaterThan(map.vectorSampleRatio, 0.95)
+        XCTAssertLessThanOrEqual(map.supportRadiusM, 0.25)
+        XCTAssertNotNil(map.pdrStepLengthScale)
+        XCTAssertEqual(map.samplesFollowPath, true)
     }
 
     func testReferenceCaptureCannotLocateAgainstItsOwnMap() throws {
@@ -46,7 +80,8 @@ final class NativeEngineTests: XCTestCase {
                 activeStartTime: nil,
                 activeEndTime: nil,
                 settings: .optimized,
-                magneticMap: selfMap
+                magneticMap: selfMap,
+                localizationMode: selfMap.localizationMode
             ),
             progress: { _, _ in }
         )) { error in
@@ -54,14 +89,15 @@ final class NativeEngineTests: XCTestCase {
         }
     }
 
-    func testMapBuilderAcceptsArbitraryPolylineInsteadOfNamedRoute() throws {
+    func testMapBuilderAcceptsUserPolylineInsteadOfNamedRoute() throws {
         let directory = try NativePositioningEngine.bundledDatasetURL(key: "route_13_2")
         let inspection = try DatasetValidator.inspect(selectedURL: directory)
         let arbitraryRoute = [
             XYPoint(x: 1, y: 1),
-            XYPoint(x: 2.4, y: 1.7),
-            XYPoint(x: 3.0, y: 3.1),
-            XYPoint(x: 4.2, y: 2.6),
+            XYPoint(x: 1, y: 3.4),
+            XYPoint(x: 4.2, y: 3.4),
+            XYPoint(x: 4.2, y: 1),
+            XYPoint(x: 1, y: 1),
         ]
         let map = try NativePositioningEngine.buildGenericMagneticMap(
             name: "arbitrary_curve",
@@ -76,6 +112,7 @@ final class NativeEngineTests: XCTestCase {
 
         XCTAssertEqual(map.referenceRoute, arbitraryRoute)
         XCTAssertGreaterThanOrEqual(map.samples.count, 8)
+        XCTAssertEqual(map.samplesFollowPath, true)
         XCTAssertEqual(map.samples.first?.x, arbitraryRoute.first?.x)
         XCTAssertEqual(map.samples.first?.y, arbitraryRoute.first?.y)
     }
@@ -115,6 +152,112 @@ final class NativeEngineTests: XCTestCase {
         XCTAssertEqual(map.gridCellSizeM, 0.4)
         XCTAssertGreaterThan(map.vectorSampleRatio, 0.95)
         XCTAssertTrue(map.samples.allSatisfy { ($0.observationCount ?? 0) >= 4 })
+        XCTAssertEqual(map.samplesFollowPath, false)
+        XCTAssertEqual(map.localizationMode, .roomAreaKnownStart)
+    }
+
+    func testRoomAreaModeRequiresExplicitHeadingInsteadOfEvaluationRoute() throws {
+        let routeMap = try loadBundledMap(group: "route_13")
+        let areaMap = GenericMagneticMapDocument(
+            schemaVersion: routeMap.schemaVersion,
+            id: "room_area_test",
+            name: "Room Area Test",
+            createdAt: routeMap.createdAt,
+            sourceDatasetKeys: routeMap.sourceDatasetKeys,
+            referenceRoute: routeMap.referenceRoute,
+            samples: routeMap.samples,
+            supportRadiusM: 0.55,
+            coordinateFrame: "test-room",
+            gridCellSizeM: 0.4,
+            samplesFollowPath: false,
+            pdrStepLengthScale: routeMap.pdrStepLengthScale
+        )
+        let directory = try NativePositioningEngine.bundledDatasetURL(key: "route_13_3")
+
+        XCTAssertThrowsError(try NativePositioningEngine.run(
+            request: .init(
+                datasetKey: "route_13_3",
+                datasetDirectory: directory,
+                route: route(for: "route_13"),
+                initialHeadingDegrees: nil,
+                activeStartTime: nil,
+                activeEndTime: nil,
+                settings: .optimized,
+                magneticMap: areaMap,
+                localizationMode: .roomAreaKnownStart
+            ),
+            progress: { _, _ in }
+        )) { error in
+            XCTAssertEqual(error as? NativePositioningEngine.EngineError, .initialHeadingRequired)
+        }
+    }
+
+    func testLocalizationModeCannotDisagreeWithMapGeometry() throws {
+        let map = try loadBundledMap(group: "route_13")
+        let directory = try NativePositioningEngine.bundledDatasetURL(key: "route_13_3")
+
+        XCTAssertThrowsError(try NativePositioningEngine.run(
+            request: .init(
+                datasetKey: "route_13_3",
+                datasetDirectory: directory,
+                route: route(for: "route_13"),
+                initialHeadingDegrees: 90,
+                activeStartTime: nil,
+                activeEndTime: nil,
+                settings: .optimized,
+                magneticMap: map,
+                localizationMode: .roomAreaKnownStart
+            ),
+            progress: { _, _ in }
+        )) { error in
+            XCTAssertEqual(error as? NativePositioningEngine.EngineError, .localizationModeMismatch)
+        }
+    }
+
+    func testRoomAreaPFDoesNotReadEvaluationRouteShape() throws {
+        let routeMap = try loadBundledMap(group: "route_13")
+        let areaMap = GenericMagneticMapDocument(
+            schemaVersion: routeMap.schemaVersion,
+            id: "room_area_independence",
+            name: "Room Area Independence",
+            createdAt: routeMap.createdAt,
+            sourceDatasetKeys: routeMap.sourceDatasetKeys,
+            referenceRoute: routeMap.referenceRoute,
+            samples: routeMap.samples,
+            supportRadiusM: 0.55,
+            coordinateFrame: "test-room",
+            gridCellSizeM: 0.4,
+            samplesFollowPath: false,
+            pdrStepLengthScale: routeMap.pdrStepLengthScale
+        )
+        let directory = try NativePositioningEngine.bundledDatasetURL(key: "route_13_3")
+        func run(route: [XYPoint]) throws -> PositioningResult {
+            try NativePositioningEngine.run(
+                request: .init(
+                    datasetKey: "route_13_3",
+                    datasetDirectory: directory,
+                    route: route,
+                    initialHeadingDegrees: 90,
+                    activeStartTime: nil,
+                    activeEndTime: nil,
+                    settings: .optimized,
+                    magneticMap: areaMap,
+                    localizationMode: .roomAreaKnownStart
+                ),
+                progress: { _, _ in }
+            )
+        }
+        let actualTruth = route(for: "route_13")
+        let deliberatelyDifferentTruth = [
+            actualTruth[0],
+            XYPoint(x: 4.2, y: 3.8),
+            XYPoint(x: 5.1, y: 3.4),
+        ]
+
+        XCTAssertEqual(
+            try run(route: actualTruth).pfTrack,
+            try run(route: deliberatelyDifferentTruth).pfTrack
+        )
     }
 
     func testRepeatedRoomCapturesMergeByGridMedian() throws {
@@ -130,6 +273,46 @@ final class NativeEngineTests: XCTestCase {
 
         XCTAssertEqual(Set(merged.sourceDatasetKeys), ["route_13_1", "second_capture"])
         XCTAssertFalse(merged.samples.isEmpty)
+    }
+
+    func testRoomMapQualityReportPreservesMissingObstacleCell() throws {
+        let samples = (0..<3).flatMap { y in
+            (0..<3).compactMap { x -> GenericMagneticMapSample? in
+                guard !(x == 1 && y == 1) else { return nil }
+                return GenericMagneticMapSample(
+                    x: Double(x) * 0.4 + 0.2,
+                    y: Double(y) * 0.4 + 0.2,
+                    magneticNormUT: 45,
+                    varianceUT2: 1,
+                    observationCount: 30,
+                    directionCount: 2
+                )
+            }
+        }
+        let map = try GenericMagneticMapDocument(
+            schemaVersion: 1, id: "quality_room", name: "Quality Room",
+            createdAt: Date(), sourceDatasetKeys: ["map_1"],
+            referenceRoute: [XYPoint(x: 0, y: 0), XYPoint(x: 1.0, y: 1.0)],
+            samples: samples, supportRadiusM: 0.55,
+            coordinateFrame: "room-a", gridCellSizeM: 0.4,
+            samplesFollowPath: false
+        ).validated()
+
+        let quality = try XCTUnwrap(map.qualityReport)
+        XCTAssertEqual(quality.coveredCellCount, 8)
+        XCTAssertEqual(quality.expectedCellCount, 9)
+        XCTAssertEqual(quality.cells.count { $0.status == .missing }, 1)
+        XCTAssertEqual(quality.grade, .excellent)
+    }
+
+    func testMapMergeRejectsDuplicateCapture() throws {
+        let first = try loadBundledMap(group: "route_13")
+
+        XCTAssertThrowsError(try GenericMagneticMapStore.merging(first, with: first)) { error in
+            guard case GenericMagneticMapStore.StoreError.duplicateSourceDataset("route_13_1") = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
     }
 
     func testCoreMotionRelativeYawIsRegisteredToKnownInitialHeading() {
@@ -160,7 +343,12 @@ final class NativeEngineTests: XCTestCase {
             routeXY: [XYPoint(x: 0, y: 0)], pdrTrack: [],
             pfTrack: [XYPoint(x: 0, y: 0), XYPoint(x: 1, y: 0), XYPoint(x: 2, y: 0)],
             pdrErrorStats: nil, pfErrorStats: nil, controlledCrossTrackErrorStats: nil,
-            closureErrorM: nil, stepsDetected: 2, sensorFramesUsed: nil, fullSensorFrames: nil,
+            closureErrorM: nil, pdrCrossTrackErrorStats: nil, pfCrossTrackErrorStats: nil,
+            pdrAlongTrackErrorStats: nil, pfAlongTrackErrorStats: nil,
+            pdrTurnAngleErrorStats: nil, pfTurnAngleErrorStats: nil,
+            pdrPathLengthRatio: nil, pfPathLengthRatio: nil,
+            pdrClosureErrorM: nil, pfClosureErrorM: nil,
+            stepsDetected: 2, sensorFramesUsed: nil, fullSensorFrames: nil,
             pfSmoothingMode: nil, pfSmoothingAlpha: nil, headingSnapDegrees: nil,
             stepLengthScale: nil, vectorMapEnabled: nil, pfJointCalibration: nil,
             alignmentMode: nil, mapBounds: nil, activeWalkInterval: nil,
@@ -191,7 +379,8 @@ final class NativeEngineTests: XCTestCase {
                 activeStartTime: interval.confidence == "低" ? nil : interval.startTime,
                 activeEndTime: interval.confidence == "低" ? nil : interval.endTime,
                 settings: .optimized,
-                magneticMap: try loadBundledMap(group: group)
+                magneticMap: try loadBundledMap(group: group),
+                localizationMode: .routeCorridorValidation
             ),
             progress: { _, _ in }
         )
