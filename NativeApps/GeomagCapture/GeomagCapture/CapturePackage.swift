@@ -109,6 +109,7 @@ struct CaptureSnapshot: Sendable {
     let stoppedAt: Date
     let requestedSampleRateHz: Double
     let route: [[Double]]?
+    let routeDirection: String
     let initialHeadingDegrees: Double?
     let spatialReference: SpatialReference
     let spatialEvents: [SpatialEventSample]
@@ -139,6 +140,7 @@ enum CapturePackageBuilder {
         let formatVersion: Int
         let datasetKey: String
         let routeXYM: [[Double]]?
+        let routeDirection: String
         let initialHeadingDeg: Double?
         let spatialReference: SpatialMetadata
         let spatialEventsFile: String
@@ -150,6 +152,7 @@ enum CapturePackageBuilder {
             case formatVersion = "format_version"
             case datasetKey = "dataset_key"
             case routeXYM = "route_xy_m"
+            case routeDirection = "route_direction"
             case initialHeadingDeg = "initial_heading_deg"
             case spatialReference = "spatial_reference"
             case spatialEventsFile = "spatial_events_file"
@@ -185,6 +188,7 @@ enum CapturePackageBuilder {
         let algorithmMagneticFieldFile: String
         let rawMagneticFieldFile: String
         let spatialReference: SpatialMetadata
+        let routeDirection: String
         let spatialEventsFile: String
         let streams: [String: Stream]
 
@@ -203,6 +207,7 @@ enum CapturePackageBuilder {
             case algorithmMagneticFieldFile = "algorithm_magnetic_field_file"
             case rawMagneticFieldFile = "raw_magnetic_field_file"
             case spatialReference = "spatial_reference"
+            case routeDirection = "route_direction"
             case spatialEventsFile = "spatial_events_file"
         }
     }
@@ -230,6 +235,7 @@ enum CapturePackageBuilder {
             algorithmMagneticFieldFile: "Magnetometer.csv",
             rawMagneticFieldFile: "MagnetometerRaw.csv",
             spatialReference: spatialMetadata(snapshot.spatialReference),
+            routeDirection: snapshot.routeDirection,
             spatialEventsFile: "SpatialEvents.csv",
             streams: [
                 "accelerometer": .init(
@@ -268,6 +274,7 @@ enum CapturePackageBuilder {
             formatVersion: 2,
             datasetKey: snapshot.datasetKey,
             routeXYM: snapshot.route,
+            routeDirection: snapshot.routeDirection,
             initialHeadingDeg: snapshot.initialHeadingDegrees,
             spatialReference: spatialMetadata(snapshot.spatialReference),
             spatialEventsFile: "SpatialEvents.csv",

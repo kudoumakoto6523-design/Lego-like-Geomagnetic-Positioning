@@ -727,12 +727,14 @@ enum NativePositioningEngine {
             samples: samplesByKey.values.sorted { lhs, rhs in
                 lhs.y == rhs.y ? lhs.x < rhs.x : lhs.y < rhs.y
             },
-            supportRadiusM: max(cellSizeM * 1.8, 0.55),
+            supportRadiusM: max(cellSizeM * 1.6, 0.40),
             coordinateFrame: coordinateFrame,
             gridCellSizeM: cellSizeM,
             samplesFollowPath: false,
             pdrStepLengthScale: rawStepDistanceTotal > 0.1
-                ? min(max(knownDistanceTotal / rawStepDistanceTotal, 0.2), 2.0)
+                // Dense scan routes include many stop/turn impulses that make
+                // the raw calibration about 20% short on continuous walks.
+                ? min(max(1.28 * knownDistanceTotal / rawStepDistanceTotal, 0.2), 2.0)
                 : nil
         ).validated()
     }
@@ -1195,6 +1197,8 @@ enum NativePositioningEngine {
         let prominenceWidth = max(3, Int((0.28 * sampleRate).rounded()))
         var steps: [Step] = []
         var previousPeak = 0
+        var recentStableHeadings: [Double] = []
+        var adaptiveHeadingAnchor: Double? = initialHeading
         guard frames.count > 17 else { return (steps, headingResolution.diagnostics) }
         for index in 15..<(frames.count - 1) {
             let historyStart = max(0, index - historyWidth)
@@ -1241,12 +1245,38 @@ enum NativePositioningEngine {
                     z: vector.z
                 )
             }
+            let sensorHeading = headings[index]
+            let heading: Double
+            if settings.headingSnapDegrees > 0 {
+                let grid = settings.headingSnapDegrees * .pi / 180
+                heading = (sensorHeading / grid).rounded() * grid
+            } else if angularRate <= 0.12 {
+                recentStableHeadings.append(sensorHeading)
+                if recentStableHeadings.count > 6 { recentStableHeadings.removeFirst() }
+                let center = atan2(
+                    recentStableHeadings.map(sin).reduce(0, +),
+                    recentStableHeadings.map(cos).reduce(0, +)
+                )
+                let spread = recentStableHeadings.map { abs(wrap($0 - center)) }.max() ?? 0
+                if recentStableHeadings.count >= 3, spread <= 8 * .pi / 180 {
+                    let anchor = adaptiveHeadingAnchor ?? center
+                    let correction = min(max(wrap(anchor - sensorHeading), -12 * .pi / 180), 12 * .pi / 180)
+                    heading = wrap(sensorHeading + 0.55 * correction)
+                    adaptiveHeadingAnchor = wrap(anchor + 0.03 * wrap(center - anchor))
+                } else {
+                    heading = sensorHeading
+                }
+            } else {
+                heading = sensorHeading
+                recentStableHeadings.removeAll(keepingCapacity: true)
+                adaptiveHeadingAnchor = nil
+            }
             steps.append(Step(
                 frameIndex: index,
                 time: frames[index].time,
                 length: length,
-                heading: headings[index],
-                sensorHeading: headings[index],
+                heading: heading,
+                sensorHeading: sensorHeading,
                 magneticMagnitude: mean(magneticWindow),
                 alignedMagneticVector: alignedVector,
                 segmentIndex: nil
@@ -1957,7 +1987,9 @@ enum NativePositioningEngine {
             } ?? false
             let headingChange = stepIndex > 0
                 ? abs(wrap(step.heading - steps[stepIndex - 1].heading)) : 0
-            if headingChange > 25 * .pi / 180 { turnSmoothingCooldown = 2 }
+            if headingChange > 25 * .pi / 180 {
+                turnSmoothingCooldown = 2
+            }
             let routeConstraintsEnabled = localizationMode == .routeCorridorValidation
             let activeTurnJunction = routeConstraintsEnabled && headingChange > 45 * .pi / 180
                 ? map.turnJunction(
@@ -2320,6 +2352,7 @@ enum NativePositioningEngine {
         }
     }
 
+
     /// A map-independent continuity guard for the first two estimates around a
     /// detected turn. It suppresses a sideways mode jump caused by a broad
     /// particle cloud without snapping the estimate to any reference corner.
@@ -2456,8 +2489,9 @@ enum NativePositioningEngine {
         map: MagneticMap,
         rng: inout SeededGenerator
     ) -> [Particle] {
-        guard map.samplesFollowPath, particles.count > 1 else {
-            return systematicResample(particles, rng: &rng)
+        guard particles.count > 1 else { return particles }
+        guard map.samplesFollowPath else {
+            return spatialModePreservingResample(particles, map: map, rng: &rng)
         }
         let binWidth = max(map.supportRadiusM * 3, 0.70)
         var bins: [Int: (indices: [Int], mass: Double)] = [:]
@@ -2491,6 +2525,87 @@ enum NativePositioningEngine {
         let totalMass = max(masses.reduce(0, +), 1e-12)
         let rawCounts = masses.map {
             Double(particles.count) * (0.82 * $0 / totalMass + 0.18 / Double(seeds.count))
+        }
+        var allocations = rawCounts.map { Int(floor($0)) }
+        var remainder = particles.count - allocations.reduce(0, +)
+        for index in rawCounts.indices.sorted(by: {
+            rawCounts[$0] - floor(rawCounts[$0]) > rawCounts[$1] - floor(rawCounts[$1])
+        }) where remainder > 0 {
+            allocations[index] += 1
+            remainder -= 1
+        }
+
+        var result: [Particle] = []
+        result.reserveCapacity(particles.count)
+        for clusterIndex in clusters.indices {
+            let indices = clusters[clusterIndex]
+            let requested = allocations[clusterIndex]
+            guard requested > 0, !indices.isEmpty else { continue }
+            let mass = max(masses[clusterIndex], 1e-12)
+            let start = rng.uniform() / Double(requested)
+            var sourceOffset = 0
+            var cumulative = particles[indices[0]].weight / mass
+            for outputIndex in 0..<requested {
+                let target = start + Double(outputIndex) / Double(requested)
+                while target > cumulative && sourceOffset + 1 < indices.count {
+                    sourceOffset += 1
+                    cumulative += particles[indices[sourceOffset]].weight / mass
+                }
+                var particle = particles[indices[sourceOffset]]
+                particle.weight = 1 / Double(particles.count)
+                result.append(particle)
+            }
+        }
+        while result.count < particles.count {
+            var particle = particles[ranked.first.flatMap { bins[$0]?.indices.first } ?? 0]
+            particle.weight = 1 / Double(particles.count)
+            result.append(particle)
+        }
+        return Array(result.prefix(particles.count))
+    }
+
+    /// Grid maps often contain several similar magnetic locations along a long
+    /// edge. Preserve a small particle share for separated spatial modes so a
+    /// later magnetic sequence can select the correct one.
+    private static func spatialModePreservingResample(
+        _ particles: [Particle],
+        map: MagneticMap,
+        rng: inout SeededGenerator
+    ) -> [Particle] {
+        let binWidth = max(map.supportRadiusM * 1.5, 0.55)
+        var bins: [GridKey: (indices: [Int], mass: Double)] = [:]
+        for index in particles.indices where particles[index].weight > 0 {
+            let key = GridKey(
+                x: Int(floor(particles[index].x / binWidth)),
+                y: Int(floor(particles[index].y / binWidth))
+            )
+            bins[key, default: ([], 0)].indices.append(index)
+            bins[key, default: ([], 0)].mass += particles[index].weight
+        }
+        let ranked = bins.keys.sorted { bins[$0]!.mass > bins[$1]!.mass }
+        var seeds: [GridKey] = []
+        for key in ranked where bins[key]!.mass >= 0.008 {
+            if seeds.allSatisfy({ hypot(Double($0.x - key.x), Double($0.y - key.y)) >= 2 }) {
+                seeds.append(key)
+            }
+            if seeds.count == 4 { break }
+        }
+        guard seeds.count >= 2 else { return systematicResample(particles, rng: &rng) }
+
+        var clusters = Array(repeating: [Int](), count: seeds.count)
+        for (key, bin) in bins {
+            let cluster = seeds.indices.min {
+                hypot(Double(seeds[$0].x - key.x), Double(seeds[$0].y - key.y))
+                    < hypot(Double(seeds[$1].x - key.x), Double(seeds[$1].y - key.y))
+            }!
+            clusters[cluster].append(contentsOf: bin.indices)
+        }
+        let masses = clusters.map { indices in
+            indices.reduce(0.0) { $0 + particles[$1].weight }
+        }
+        let totalMass = max(masses.reduce(0, +), 1e-12)
+        let rawCounts = masses.map {
+            Double(particles.count) * (0.84 * $0 / totalMass + 0.16 / Double(seeds.count))
         }
         var allocations = rawCounts.map { Int(floor($0)) }
         var remainder = particles.count - allocations.reduce(0, +)

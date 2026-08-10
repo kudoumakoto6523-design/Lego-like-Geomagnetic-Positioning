@@ -35,6 +35,7 @@ final class CaptureRecoveryStore: @unchecked Sendable {
         startedAt: Date,
         requestedSampleRateHz: Double,
         route: [[Double]]?,
+        routeDirection: String,
         initialHeadingDegrees: Double?,
         spatialReference: SpatialReference,
         spatialEvents: [SpatialEventSample]
@@ -60,6 +61,7 @@ final class CaptureRecoveryStore: @unchecked Sendable {
             startedAt: startedAt,
             requestedSampleRateHz: requestedSampleRateHz,
             route: route,
+            routeDirection: routeDirection,
             initialHeadingDegrees: initialHeadingDegrees,
             spatialReference: spatialReference,
             spatialEvents: spatialEvents
@@ -243,6 +245,7 @@ final class CaptureRecoveryStore: @unchecked Sendable {
         startedAt: Date,
         requestedSampleRateHz: Double,
         route: [[Double]]?,
+        routeDirection: String,
         initialHeadingDegrees: Double?,
         spatialReference: SpatialReference,
         spatialEvents: [SpatialEventSample]
@@ -275,6 +278,7 @@ final class CaptureRecoveryStore: @unchecked Sendable {
         var dataset: [String: Any] = [
             "format_version": 2,
             "dataset_key": datasetKey,
+            "route_direction": routeDirection,
             "spatial_reference": spatial,
             "spatial_events_file": "SpatialEvents.csv",
             "device_pose": "face_up_front_forward",
@@ -289,6 +293,7 @@ final class CaptureRecoveryStore: @unchecked Sendable {
         let capture: [String: Any] = [
             "format_version": 3,
             "dataset_key": datasetKey,
+            "route_direction": routeDirection,
             "created_at": iso.string(from: startedAt),
             "requested_sample_rate_hz": requestedSampleRateHz,
             "timestamp_mode": "seconds_since_capture_start",

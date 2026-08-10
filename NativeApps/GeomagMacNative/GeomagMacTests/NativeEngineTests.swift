@@ -336,6 +336,28 @@ final class NativeEngineTests: XCTestCase {
         XCTAssertEqual(resolution.headings[0], initialHeading, accuracy: 1e-12)
     }
 
+    func testCoreMotionRepairsIsolatedYawSpike() {
+        let frameTimes = (0..<200).map { Double($0) * 0.01 }
+        let initialHeading = 0.4
+        let deviceFrames = frameTimes.enumerated().map { index, time -> DeviceHeadingFrame? in
+            var yaw = 1.5 + 0.3 * time
+            if index == 100 { yaw += 1.0 }
+            return DeviceHeadingFrame(
+                yawRadians: atan2(sin(yaw), cos(yaw)),
+                magneticAccuracy: 2
+            )
+        }
+        let resolution = DeviceHeadingResolver.resolve(
+            frameTimes: frameTimes,
+            gyroHeadings: frameTimes.map { initialHeading + 0.3 * $0 },
+            deviceFrames: deviceFrames,
+            initialHeading: initialHeading
+        )
+
+        XCTAssertTrue(resolution.diagnostics.deviceMotionAccepted)
+        XCTAssertEqual(resolution.headings.last!, initialHeading + 0.3 * frameTimes.last!, accuracy: 0.01)
+    }
+
     func testCSVAlignsFirstConfidenceWithFirstPropagatedPFPoint() throws {
         let confidence = [confidenceSample(score: 0.25), confidenceSample(score: 0.75)]
         let result = PositioningResult(

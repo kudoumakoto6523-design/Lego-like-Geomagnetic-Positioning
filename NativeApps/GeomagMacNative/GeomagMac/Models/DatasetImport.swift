@@ -292,13 +292,21 @@ enum DatasetValidator {
             ?? filesByName["capture_metadata.json"]
         let metadata = metadataURL.flatMap(readMetadata)
         let spatialAnchors = filesByName["spatialevents.csv"].map(readSpatialAnchors) ?? []
+        let anchorRouteText = spatialAnchors.count >= 2
+            ? spatialAnchors.map { "\(number($0.x)),\(number($0.y))" }.joined(separator: "; ")
+            : nil
+        let suggestedRouteText = metadata?.routeText ?? anchorRouteText
+        let anchorInitialHeading = inferredInitialHeading(from: spatialAnchors)
+        let suggestedInitialHeading = metadata?.routeText == nil
+            ? (anchorInitialHeading ?? metadata?.initialHeadingDegrees)
+            : metadata?.initialHeadingDegrees
         let mappingPauseIntervals = filesByName["spatialevents.csv"]
             .map(readMappingPauseIntervals) ?? []
         var warnings: [String] = []
         if locationURL == nil {
             warnings.append("未找到 Location.csv；当前算法不依赖 GPS，可以继续运行。")
         }
-        if metadata?.routeText == nil {
+        if suggestedRouteText == nil {
             warnings.append("未从元数据读取到 route_xy_m，运行前必须填写真实路线坐标。")
         }
 
@@ -339,8 +347,8 @@ enum DatasetValidator {
             overlapEnd: overlapEnd,
             metadataURL: metadataURL,
             suggestedDatasetName: metadata?.datasetName,
-            suggestedRouteText: metadata?.routeText,
-            suggestedInitialHeadingDegrees: metadata?.initialHeadingDegrees,
+            suggestedRouteText: suggestedRouteText,
+            suggestedInitialHeadingDegrees: suggestedInitialHeading,
             suggestedMapURL: metadata?.mapURL(relativeTo: directoryURL),
             coordinateFrame: metadata?.coordinateFrame,
             spatialAnchors: spatialAnchors,
@@ -778,6 +786,20 @@ enum DatasetValidator {
 
     private static func number(_ value: Double) -> String {
         String(format: "%.8g", locale: Locale(identifier: "en_US_POSIX"), value)
+    }
+
+    private static func inferredInitialHeading(
+        from anchors: [ImportedSpatialAnchor]
+    ) -> Double? {
+        guard let first = anchors.first else { return nil }
+        for anchor in anchors.dropFirst() {
+            let dx = anchor.x - first.x
+            let dy = anchor.y - first.y
+            if hypot(dx, dy) > 1e-6 {
+                return atan2(dy, dx) * 180 / .pi
+            }
+        }
+        return nil
     }
 
     private struct Metadata {

@@ -761,6 +761,19 @@ struct ContentView: View {
                     .disabled(model.isBackendRunning)
                 }
 
+                parameterLabel(
+                    "航向吸附",
+                    value: model.algorithmSettings.headingSnapDegrees > 0
+                        ? "\(number(model.algorithmSettings.headingSnapDegrees))°"
+                        : "自适应直线"
+                )
+                Slider(
+                    value: algorithmBinding(\.headingSnapDegrees),
+                    in: 0...90,
+                    step: 5
+                )
+                .disabled(model.isBackendRunning)
+
                 parameterLabel("步长比例", value: number(model.algorithmSettings.stepLengthScale))
                 Slider(
                     value: algorithmBinding(\.stepLengthScale),

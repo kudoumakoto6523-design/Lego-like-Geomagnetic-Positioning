@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var anchorXText = "0"
     @State private var anchorYText = "0"
     @State private var mappingMode = true
+    @State private var reverseRoute = false
     @State private var roomWidthText = "6"
     @State private var roomHeightText = "8"
     @State private var scanSpacingText = "0.5"
@@ -159,6 +160,12 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Toggle("反向采集路线", isOn: $reverseRoute)
+                .font(.subheadline.weight(.semibold))
+            Text(reverseRoute ? "将从路线终点出发，坐标系保持不变。" : "按路线原顺序采集。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             labeledField("数据集名称", hint: "例如 route3_run1") {
                 TextField("route3_run1", text: $datasetName)
@@ -400,7 +407,8 @@ struct ContentView: View {
                         initialHeadingText: initialHeadingText,
                         coordinateFrameText: coordinateFrameText,
                         startXText: startXText,
-                        startYText: startYText
+                        startYText: startYText,
+                        reverseRoute: reverseRoute
                     )
                 } label: {
                     Label("开始采集", systemImage: "record.circle")
@@ -505,6 +513,7 @@ struct ContentView: View {
         }
         routeText = points.map { String(format: "%.3f,%.3f", $0.0, $0.1) }
             .joined(separator: "; ")
+        reverseRoute = false
         startXText = "0"
         startYText = "0"
         initialHeadingText = "0"

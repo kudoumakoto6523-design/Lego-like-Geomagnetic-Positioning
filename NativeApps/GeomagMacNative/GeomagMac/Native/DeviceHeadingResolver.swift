@@ -61,30 +61,36 @@ enum DeviceHeadingResolver {
 
         var unwrappedYaw = Array(repeating: Double.nan, count: deviceFrames.count)
         var previousRaw: Double?
+        var previousIndex: Int?
         var continuous = 0.0
+        var repairedOutlierCount = 0
         for index in deviceFrames.indices {
             guard let raw = deviceFrames[index]?.yawRadians else { continue }
-            if let previousRaw {
-                continuous += wrapped(raw - previousRaw)
+            if let previousRaw, let previousIndex {
+                let rawDelta = wrapped(raw - previousRaw)
+                let dt = frameTimes[index] - frameTimes[previousIndex]
+                let gyroDelta = wrapped(gyroHeadings[index] - gyroHeadings[previousIndex])
+                if dt > 1e-6,
+                   abs(rawDelta) / dt > 6.0,
+                   abs(wrapped(rawDelta - gyroDelta)) > 0.08 {
+                    continuous += gyroDelta
+                    repairedOutlierCount += 1
+                } else {
+                    continuous += rawDelta
+                }
             } else {
                 continuous = raw
             }
             unwrappedYaw[index] = continuous
             previousRaw = raw
+            previousIndex = index
         }
         guard let anchorIndex = validIndices.first else { return fallback("insufficient_samples") }
         let anchorYaw = unwrappedYaw[anchorIndex]
-
-        var maximumYawRate = 0.0
-        for (previous, current) in zip(validIndices, validIndices.dropFirst()) {
-            let dt = frameTimes[current] - frameTimes[previous]
-            guard dt > 1e-6 else { continue }
-            maximumYawRate = max(
-                maximumYawRate,
-                abs(unwrappedYaw[current] - unwrappedYaw[previous]) / dt
-            )
+        let allowedOutliers = max(5, Int(ceil(Double(sampleCount) * 0.005)))
+        guard repairedOutlierCount <= allowedOutliers else {
+            return fallback("implausible_yaw_rate")
         }
-        guard maximumYawRate <= 6.0 else { return fallback("implausible_yaw_rate") }
 
         let deviceRelative = validIndices.map { unwrappedYaw[$0] - anchorYaw }
         let gyroUnwrapped = unwrap(gyroHeadings)

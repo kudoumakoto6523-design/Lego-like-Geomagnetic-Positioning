@@ -69,6 +69,7 @@ final class MotionRecorder: ObservableObject {
     private var startedAt = Date()
     private var datasetKey = ""
     private var route: [[Double]]?
+    private var routeDirection = "forward"
     private var initialHeadingDegrees: Double?
     private var spatialReference: SpatialReference?
     private var spatialEvents: [SpatialEventSample] = []
@@ -132,7 +133,8 @@ final class MotionRecorder: ObservableObject {
         initialHeadingText: String,
         coordinateFrameText: String,
         startXText: String,
-        startYText: String
+        startYText: String,
+        reverseRoute: Bool = false
     ) {
         guard !isRecording else { return }
         guard manager.isAccelerometerAvailable,
@@ -160,8 +162,8 @@ final class MotionRecorder: ObservableObject {
             return
         }
         let trimmedRoute = routeText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parsedRoute = trimmedRoute.isEmpty ? nil : Self.parseRoute(trimmedRoute)
-        if !trimmedRoute.isEmpty, parsedRoute == nil {
+        let forwardRoute = trimmedRoute.isEmpty ? nil : Self.parseRoute(trimmedRoute)
+        if !trimmedRoute.isEmpty, forwardRoute == nil {
             errorMessage = "路线格式不正确。请使用 x1,y1; x2,y2，例如 1.44,0.55; 1.44,6.05。"
             return
         }
@@ -171,19 +173,23 @@ final class MotionRecorder: ObservableObject {
             errorMessage = "初始航向必须是有效数字，或者留空。"
             return
         }
+        let usesReverseRoute = reverseRoute && forwardRoute != nil
+        let parsedRoute = usesReverseRoute ? forwardRoute.map { Array($0.reversed()) } : forwardRoute
         let routeHeading = parsedRoute.flatMap(Self.initialHeading)
-        guard let resolvedHeading = parsedHeading ?? routeHeading,
+        guard let resolvedHeading = (usesReverseRoute ? nil : parsedHeading) ?? routeHeading,
               resolvedHeading.isFinite else {
             errorMessage = "请填写初始航向；如果填写了真实路线，也可以留空由路线首段计算。"
             return
         }
-        if let parsedRoute,
+        let resolvedStartX = parsedRoute?.first?[0] ?? startX
+        let resolvedStartY = parsedRoute?.first?[1] ?? startY
+        if !usesReverseRoute, let parsedRoute,
            let firstPoint = parsedRoute.first,
            hypot(firstPoint[0] - startX, firstPoint[1] - startY) > 0.25 {
             errorMessage = "真实路线第一个坐标必须与起点 X、Y 一致（允许 0.25 m 误差）。"
             return
         }
-        if let parsedHeading,
+        if !usesReverseRoute, let parsedHeading,
            let routeHeading {
             let rawDifference = abs((parsedHeading - routeHeading).truncatingRemainder(dividingBy: 360))
             let difference = min(rawDifference, 360 - rawDifference)
@@ -198,11 +204,12 @@ final class MotionRecorder: ObservableObject {
 
         datasetKey = normalizedName
         route = parsedRoute
+        routeDirection = usesReverseRoute ? "reverse" : "forward"
         initialHeadingDegrees = resolvedHeading
         let resolvedSpatialReference = SpatialReference(
             coordinateFrame: coordinateFrame,
-            startX: startX,
-            startY: startY,
+            startX: resolvedStartX,
+            startY: resolvedStartY,
             initialHeadingDegrees: resolvedHeading
         )
         spatialReference = resolvedSpatialReference
@@ -211,14 +218,14 @@ final class MotionRecorder: ObservableObject {
                 time: 0,
                 type: "anchor",
                 label: "start",
-                x: startX,
-                y: startY,
+                x: resolvedStartX,
+                y: resolvedStartY,
                 headingDegrees: resolvedHeading,
                 deviceYawDegrees: nil
             )
         ]
         spatialEventCount = spatialEvents.count
-        lastSpatialEventMessage = String(format: "起点锚点 · (%.2f, %.2f)", startX, startY)
+        lastSpatialEventMessage = String(format: "起点锚点 · (%.2f, %.2f)", resolvedStartX, resolvedStartY)
         initialDeviceYawDegrees = nil
         globalHeadingDegrees = resolvedHeading
         nextRouteAnchorIndex = parsedRoute == nil ? 0 : 1
@@ -244,6 +251,7 @@ final class MotionRecorder: ObservableObject {
                 startedAt: startedAt,
                 requestedSampleRateHz: requestedSampleRateHz,
                 route: parsedRoute,
+                routeDirection: routeDirection,
                 initialHeadingDegrees: resolvedHeading,
                 spatialReference: resolvedSpatialReference,
                 spatialEvents: spatialEvents
@@ -533,6 +541,7 @@ final class MotionRecorder: ObservableObject {
             stoppedAt: stoppedAt,
             requestedSampleRateHz: requestedSampleRateHz,
             route: route,
+            routeDirection: routeDirection,
             initialHeadingDegrees: initialHeadingDegrees,
             spatialReference: spatialReference,
             spatialEvents: spatialEvents
@@ -767,6 +776,7 @@ private final class CaptureBuffer: @unchecked Sendable {
         stoppedAt: Date,
         requestedSampleRateHz: Double,
         route: [[Double]]?,
+        routeDirection: String,
         initialHeadingDegrees: Double?,
         spatialReference: SpatialReference,
         spatialEvents: [SpatialEventSample]
@@ -778,6 +788,7 @@ private final class CaptureBuffer: @unchecked Sendable {
                 stoppedAt: stoppedAt,
                 requestedSampleRateHz: requestedSampleRateHz,
                 route: route,
+                routeDirection: routeDirection,
                 initialHeadingDegrees: initialHeadingDegrees,
                 spatialReference: spatialReference,
                 spatialEvents: spatialEvents,

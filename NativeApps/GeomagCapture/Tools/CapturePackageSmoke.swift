@@ -9,6 +9,7 @@ struct CapturePackageSmoke {
             stoppedAt: Date(timeIntervalSince1970: 1_700_000_001),
             requestedSampleRateHz: 100,
             route: [[1.44, 0.55], [1.44, 6.05]],
+            routeDirection: "forward",
             initialHeadingDegrees: 90,
             spatialReference: .init(
                 coordinateFrame: "building-a-floor-1",

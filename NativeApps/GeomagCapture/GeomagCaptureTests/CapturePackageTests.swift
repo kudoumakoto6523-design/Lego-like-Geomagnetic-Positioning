@@ -3,6 +3,17 @@ import XCTest
 @testable import GeomagCapture
 
 final class CapturePackageTests: XCTestCase {
+    func testPackageExportsRouteDirection() throws {
+        let files = try CapturePackageBuilder.buildFiles(
+            snapshot: makeSnapshot(routeDirection: "reverse")
+        )
+        let metadata = try XCTUnwrap(files["geomag_dataset.json"])
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: metadata) as? [String: Any]
+        )
+        XCTAssertEqual(object["route_direction"] as? String, "reverse")
+    }
+
     func testPackageUsesCalibratedDeviceMotionMagnetometer() throws {
         let snapshot = makeSnapshot()
 
@@ -31,6 +42,7 @@ final class CapturePackageTests: XCTestCase {
             startedAt: snapshot.startedAt,
             requestedSampleRateHz: snapshot.requestedSampleRateHz,
             route: snapshot.route,
+            routeDirection: snapshot.routeDirection,
             initialHeadingDegrees: snapshot.initialHeadingDegrees,
             spatialReference: snapshot.spatialReference,
             spatialEvents: snapshot.spatialEvents
@@ -67,6 +79,7 @@ final class CapturePackageTests: XCTestCase {
             startedAt: snapshot.startedAt,
             requestedSampleRateHz: snapshot.requestedSampleRateHz,
             route: snapshot.route,
+            routeDirection: snapshot.routeDirection,
             initialHeadingDegrees: snapshot.initialHeadingDegrees,
             spatialReference: snapshot.spatialReference,
             spatialEvents: snapshot.spatialEvents
@@ -85,7 +98,8 @@ final class CapturePackageTests: XCTestCase {
     }
 
     private func makeSnapshot(
-        datasetKey: String = "capture-package-test"
+        datasetKey: String = "capture-package-test",
+        routeDirection: String = "forward"
     ) -> CaptureSnapshot {
         CaptureSnapshot(
             datasetKey: datasetKey,
@@ -93,6 +107,7 @@ final class CapturePackageTests: XCTestCase {
             stoppedAt: Date(timeIntervalSince1970: 1_700_000_001),
             requestedSampleRateHz: 100,
             route: [[1.44, 0.55], [1.44, 6.05]],
+            routeDirection: routeDirection,
             initialHeadingDegrees: 90,
             spatialReference: SpatialReference(
                 coordinateFrame: "building-a-floor-1",
