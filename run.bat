@@ -3,166 +3,117 @@ setlocal EnableExtensions
 chcp 65001 >nul 2>nul
 cd /d "%~dp0"
 
-call :MAIN
-set "RC=%ERRORLEVEL%"
+set "PROJECT_DIR=%CD%"
+set "VENV_DIR=%PROJECT_DIR%\.venv"
+set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
+set "APP_FILE=%PROJECT_DIR%\geomag_web_app.py"
+set "SETUP_ONLY=0"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 
-echo.
-echo ============================================================
-if "%RC%"=="0" (
-    echo Finished. If the Bokeh server is still running, keep this window open.
-) else (
-    echo Script stopped with error code %RC%.
-    echo Please copy the full text above and send it to the developer.
+if /I "%~1"=="--setup-only" set "SETUP_ONLY=1"
+if not "%~1"=="" if /I not "%~1"=="--setup-only" (
+    echo ERROR: Unknown option "%~1".
+    echo Usage: run.bat [--setup-only]
+    exit /b 2
 )
-echo Press any key to close this window...
-pause >nul
-exit /b %RC%
-
-:MAIN
-set "ENV_NAME=lego_geomag"
-set "APP_FILE=%CD%\geomag_web_app.py"
 
 echo ============================================================
-echo Geomagnetic Web App one-click launcher for Windows
-echo Project directory: %CD%
-echo Target conda environment: %ENV_NAME%
+echo Geomagnetic Positioning - Windows launcher
+echo Project: %PROJECT_DIR%
+echo Environment: %VENV_DIR%
 echo ============================================================
 echo.
 
 if not exist "%APP_FILE%" (
-    echo ERROR: geomag_web_app.py was not found in this directory.
-    echo Please put this BAT file in the project root directory.
+    echo ERROR: geomag_web_app.py was not found.
+    echo Keep run.bat in the project root directory.
     exit /b 10
 )
 
-call :FIND_CONDA
-if errorlevel 1 exit /b 11
+if not exist "%VENV_PYTHON%" call :CREATE_ENV
+if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo Using conda command: %CONDA_CMD%
-
-set "CONDA_BASE="
-for /f "delims=" %%B in ('call "%CONDA_CMD%" info --base 2^>nul') do (
-    if not defined CONDA_BASE set "CONDA_BASE=%%B"
-)
-
-if not defined CONDA_BASE (
-    echo ERROR: Your conda is too old or broken.
-    echo The command "conda info --base" failed.
-    echo.
-    echo Your current Anaconda seems to be an old Python-2-era installation.
-    echo Please install a current Miniconda or Anaconda, then run this BAT again.
-    echo Download page:
-    echo https://docs.conda.io/en/latest/miniconda.html
+"%VENV_PYTHON%" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+if errorlevel 1 (
+    echo ERROR: The existing .venv is invalid or uses Python older than 3.11.
+    echo Rename or remove "%VENV_DIR%" and run this script again.
     exit /b 12
 )
 
-if exist "%CONDA_BASE%\condabin\conda.bat" (
-    set "CONDA_CMD=%CONDA_BASE%\condabin\conda.bat"
+echo Checking the project environment...
+"%VENV_PYTHON%" -c "import importlib.metadata as m; import bokeh, gstools, matplotlib, numpy, pandas, pykrige, scipy, Geomag; m.version('geomagnetic-positioning-ddtw')" >nul 2>nul
+if errorlevel 1 (
+    echo Installing project dependencies ^(first run may take several minutes^)...
+    "%VENV_PYTHON%" -m pip install --disable-pip-version-check --prefer-binary --retries 5 --timeout 120 --editable "%PROJECT_DIR%"
+    if errorlevel 1 (
+        echo.
+        echo ERROR: Dependency installation failed.
+        echo Check the network connection, then run this script again.
+        exit /b 13
+    )
+) else (
+    echo Dependencies are already installed.
 )
 
-echo Conda base: %CONDA_BASE%
 echo.
-
-echo Checking conda health...
-call "%CONDA_CMD%" --version
+echo Checking imports...
+"%VENV_PYTHON%" -c "import bokeh, gstools, matplotlib, numpy, pandas, pykrige, scipy, Geomag; print('Environment OK - Python', __import__('sys').version.split()[0], '/ Bokeh', bokeh.__version__)"
 if errorlevel 1 (
-    echo ERROR: conda --version failed.
-    exit /b 13
-)
-
-echo.
-echo Checking whether environment "%ENV_NAME%" exists...
-set "ENV_EXISTS=0"
-call "%CONDA_CMD%" env list > "%TEMP%\geomag_conda_envs.txt" 2> "%TEMP%\geomag_conda_err.txt"
-if errorlevel 1 (
-    echo ERROR: "conda env list" failed.
-    echo This usually means the local Conda installation or channel configuration is broken.
-    echo.
-    echo Conda error output:
-    type "%TEMP%\geomag_conda_err.txt"
-    echo.
-    echo Suggested fix:
-    echo   1. Install the latest Miniconda or Anaconda.
-    echo   2. Or open Anaconda Prompt and run:
-    echo      conda config --remove-key channels
-    echo      conda config --add channels defaults
-    echo      conda update -n base conda
+    echo ERROR: The environment verification failed.
     exit /b 14
 )
 
-findstr /R /C:"^%ENV_NAME%[ ][ ]*" "%TEMP%\geomag_conda_envs.txt" >nul 2>nul
-if "%ERRORLEVEL%"=="0" set "ENV_EXISTS=1"
-
-if "%ENV_EXISTS%"=="0" (
-    echo Creating environment "%ENV_NAME%"...
-    call "%CONDA_CMD%" create -y -n "%ENV_NAME%" python=3.11 pip
-    if errorlevel 1 (
-        echo ERROR: Failed to create conda environment.
-        echo If the error mentions channels, please reinstall or update Conda.
-        exit /b 15
-    )
-) else (
-    echo Environment "%ENV_NAME%" already exists.
-)
-
-echo.
-echo Activating environment "%ENV_NAME%"...
-call "%CONDA_CMD%" activate "%ENV_NAME%"
-if errorlevel 1 (
-    echo ERROR: Failed to activate environment "%ENV_NAME%".
-    exit /b 16
-)
-
-echo.
-echo Installing Python dependencies...
-python -m pip install --upgrade pip
-if errorlevel 1 exit /b 17
-
-python -m pip install numpy pykrige matplotlib bokeh
-if errorlevel 1 exit /b 18
-
-if exist "%CD%\pyproject.toml" (
+if "%SETUP_ONLY%"=="1" (
     echo.
-    echo Installing local project in editable mode...
-    python -m pip install -e "%CD%"
-    if errorlevel 1 exit /b 19
+    echo Setup completed. PyCharm interpreter:
+    echo   %VENV_PYTHON%
+    exit /b 0
 )
 
 echo.
-echo Starting Bokeh web app...
-echo If it starts successfully, this console must remain open.
-echo App URL will usually be:
-echo   http://localhost:5006/geomag_web_app
+echo Starting the Bokeh web app...
+echo URL: http://localhost:5006/geomag_web_app
+echo Keep this window open. Press Ctrl+C to stop the server.
 echo.
-python -m bokeh serve --show "%APP_FILE%"
-if errorlevel 1 (
-    echo ERROR: Bokeh failed to start.
-    exit /b 20
+"%VENV_PYTHON%" -m bokeh serve --show "%APP_FILE%"
+set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" (
+    echo.
+    echo ERROR: Bokeh stopped with error code %RC%.
 )
+exit /b %RC%
 
-exit /b 0
+:CREATE_ENV
+echo Creating the project-local Python environment...
 
-:FIND_CONDA
-set "CONDA_CMD="
-
-if exist "%USERPROFILE%\anaconda3\condabin\conda.bat" set "CONDA_CMD=%USERPROFILE%\anaconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "%USERPROFILE%\miniconda3\condabin\conda.bat" set "CONDA_CMD=%USERPROFILE%\miniconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "%LOCALAPPDATA%\anaconda3\condabin\conda.bat" set "CONDA_CMD=%LOCALAPPDATA%\anaconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "%LOCALAPPDATA%\miniconda3\condabin\conda.bat" set "CONDA_CMD=%LOCALAPPDATA%\miniconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "C:\ProgramData\anaconda3\condabin\conda.bat" set "CONDA_CMD=C:\ProgramData\anaconda3\condabin\conda.bat"
-if not defined CONDA_CMD if exist "C:\ProgramData\miniconda3\condabin\conda.bat" set "CONDA_CMD=C:\ProgramData\miniconda3\condabin\conda.bat"
-
-if not defined CONDA_CMD (
-    for /f "delims=" %%C in ('where conda 2^>nul') do (
-        if not defined CONDA_CMD set "CONDA_CMD=%%C"
+where py >nul 2>nul
+if not errorlevel 1 (
+    py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+    if not errorlevel 1 (
+        py -3 -m venv "%VENV_DIR%"
+        if errorlevel 1 (
+            echo ERROR: Python launcher could not create the virtual environment.
+            exit /b 11
+        )
+        exit /b 0
     )
 )
 
-if not defined CONDA_CMD (
-    echo ERROR: Conda was not found.
-    echo Please install Miniconda or Anaconda first:
-    echo https://docs.conda.io/en/latest/miniconda.html
-    exit /b 1
+where python >nul 2>nul
+if not errorlevel 1 (
+    python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+    if not errorlevel 1 (
+        python -m venv "%VENV_DIR%"
+        if errorlevel 1 (
+            echo ERROR: Python could not create the virtual environment.
+            exit /b 11
+        )
+        exit /b 0
+    )
 )
 
-exit /b 0
+echo ERROR: Python 3.11 or newer was not found.
+echo Install Python from https://www.python.org/downloads/windows/
+echo During installation, enable "Python Launcher for Windows".
+exit /b 11

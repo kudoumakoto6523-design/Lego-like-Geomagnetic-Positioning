@@ -1,0 +1,57 @@
+{
+  "pdr": {
+    "step_judge": "peak_dynamic",
+    "step_judge_params": {
+      "peak_sigma": 0.45,
+      "peak_prominence": 0.3,
+      "min_samples_per_step": 15
+    },
+    "step_length": "weinberg",
+    "step_length_params": {
+      "weinberg_k": 0.22
+    },
+    "heading": "gyro",
+    "heading_params": {
+      "dt": null,
+      "heading_offset_deg": 90.0
+    },
+    "mag": "norm_mean",
+    "mag_params": {}
+  },
+  "pf": {
+    "motion": "gaussian",
+    "motion_params": {
+      "heading_noise_std": 0.12,
+      "step_noise_std": 0.2
+    },
+    "weight": "ddtw",
+    "weight_params": {
+      "sigma": 0.8,
+      "max_hist": 100
+    },
+    "particle_size": "kld",
+    "particle_size_params": {
+      "epsilon": 0.1,
+      "bin_size_xy": 0.25,
+      "bin_size_theta": 0.35
+    },
+    "resample_trigger": "ess_or_target",
+    "resample_trigger_params": {
+      "ess_ratio_threshold": 0.4
+    },
+    "resample": "cso",
+    "resample_params": {},
+    "state_params": {
+      "num_particles": 3000,
+      "min_particles": 1000,
+      "max_particles": 1000000
+    },
+    "stage_order": [
+      "predict",
+      "update",
+      "particle_size",
+      "resample_decision",
+      "resample"
+    ]
+  }
+}

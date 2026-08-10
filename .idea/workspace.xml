@@ -5,20 +5,13 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="47dcb94b-da96-48e1-90fa-537fc3bc1cd7" name="更改" comment="">
-      <change afterPath="$PROJECT_DIR$/geomag_web_app.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/run.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Geomag/branching.py" beforeDir="false" afterPath="$PROJECT_DIR$/Geomag/branching.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/PythonProject.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/PythonProject.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/geomagnetic_positioning_ddtw.egg-info/SOURCES.txt" beforeDir="false" afterPath="$PROJECT_DIR$/geomagnetic_positioning_ddtw.egg-info/SOURCES.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/magnetometer_map_own.py" beforeDir="false" afterPath="$PROJECT_DIR$/data/own_data/magnetometer_map_own.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_get_map_temp.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_get_map_temp.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_get_sensor_and_len.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_get_sensor_and_len.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_get_true_route.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_get_true_route.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_multi_methods.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_multi_methods.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_own_data_package_demo.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_own_data_package_demo.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main_own_simulation.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/main_own_simulation.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/temp_test.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/geomagnetic_positioning_ddtw.egg-info/PKG-INFO" beforeDir="false" afterPath="$PROJECT_DIR$/geomagnetic_positioning_ddtw.egg-info/PKG-INFO" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/geomagnetic_positioning_ddtw.egg-info/requires.txt" beforeDir="false" afterPath="$PROJECT_DIR$/geomagnetic_positioning_ddtw.egg-info/requires.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/run.bat" beforeDir="false" afterPath="$PROJECT_DIR$/run.bat" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -91,6 +84,7 @@
     "ai.playground.ignore.import.keys.banner.in.settings": "true",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
     "git-widget-placeholder": "main",
+    "ignore.virus.scanning.warn.message": "true",
     "junie.onboarding.icon.badge.shown": "true",
     "last_opened_file_path": "/Users/mac/Desktop/Folder/Research/Dachuang_original/Lego-like-Geomagnetic-Positioning",
     "node.js.detected.package.eslint": "true",
@@ -117,8 +111,8 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-js-predefined-d6986cc7102b-9b0f141eb926-JavaScript-PY-253.31033.139" />
-        <option value="bundled-python-sdk-2653e85de345-6d6dccd035ac-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-253.31033.139" />
+        <option value="bundled-js-predefined-d6986cc7102b-76f8388c3a79-JavaScript-PY-243.24978.54" />
+        <option value="bundled-python-sdk-91e3b7efe1d4-466328ff949b-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-243.24978.54" />
       </set>
     </attachedChunks>
   </component>
@@ -158,6 +152,7 @@
       <workItem from="1778746568272" duration="1333000" />
       <workItem from="1779086070919" duration="6752000" />
       <workItem from="1779093420154" duration="3831000" />
+      <workItem from="1785566233766" duration="63000" />
     </task>
     <servers />
   </component>

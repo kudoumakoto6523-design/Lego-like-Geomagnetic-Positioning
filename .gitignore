@@ -1,0 +1,7 @@
+.venv/
+.env
+.pytest_cache/
+*.py[cod]
+data/uploads/
+results/web_*_last.json
+results/web_*_last.png

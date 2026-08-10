@@ -17,6 +17,8 @@ class RunContext:
     uji_test_file: str = "tt01.txt"
     own_data_dir: str = "data/Geomagnetic Navigation 2026-03-03 15-28-45"
     own_dataset_key: str | None = None
+    outdoor_data_root: str = "data/raw/outdoor_rtk_map"
+    outdoor_navigation_key: str = "nav1"
 
 
 @dataclass

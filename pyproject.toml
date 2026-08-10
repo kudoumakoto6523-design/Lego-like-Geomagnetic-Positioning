@@ -9,10 +9,12 @@ description = "Geomagnetic + IMU fusion experiments with PF/DDTW on UJIIndoorLoc
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.24",
+  "pandas>=2.0",
+  "scipy>=1.10",
   "pykrige>=1.7",
   "matplotlib>=3.7",
   "gstools",
-  "pykrige"
+  "bokeh>=3.4"
 ]
 
 [tool.map_builder]
@@ -24,6 +26,20 @@ output_model_npz = "data/processed/uji_mag_model_kriging.npz"
 output_preview_npz = "data/processed/uji_mag_grid_preview_kriging.npz"
 output_json = "data/processed/uji_mag_grid_kriging_meta.json"
 output_png = "data/processed/uji_mag_grid_kriging.png"
+
+[tool.outdoor_map_builder]
+data_root = "data/raw/outdoor_rtk_map"
+output_dir = "data/processed/outdoor_rtk_map"
+cell_size_m = 0.15
+grid_spacing_m = 0.10
+variogram_model = "exponential"
+variogram_nlags = 12
+variogram_weight = true
+kriging_pseudo_inverse = true
+max_rtk_interpolation_gap_s = 0.5
+rtk_window_margin_s = 2.0
+required_fix_quality = [4]
+color_percentiles = [1.0, 99.0]
 
 [tool.setuptools.packages.find]
 include = ["Geomag*"]

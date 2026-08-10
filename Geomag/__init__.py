@@ -16,6 +16,13 @@ from Geomag.pipeline import (
     build_pf_from_config,
     build_pf_sequential,
 )
+from Geomag.auto_tuning import (
+    DeepSeekSettings,
+    DeepSeekTuningClient,
+    apply_parameter_patch,
+    build_tuning_observation,
+    suggest_parameters,
+)
 
 __all__ = [
     "Experiment",
@@ -37,4 +44,9 @@ __all__ = [
     "ParticleSizeStage",
     "ResampleDecisionStage",
     "ResampleStage",
+    "DeepSeekSettings",
+    "DeepSeekTuningClient",
+    "build_tuning_observation",
+    "apply_parameter_patch",
+    "suggest_parameters",
 ]

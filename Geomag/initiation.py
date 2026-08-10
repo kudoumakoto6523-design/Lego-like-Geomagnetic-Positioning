@@ -13,6 +13,8 @@ class Initializer:
         uji_test_file="tt01.txt",
         own_data_dir="data/Geomagnetic Navigation 2026-03-03 15-28-45",
         own_dataset_key=None,
+        outdoor_data_root="data/raw/outdoor_rtk_map",
+        outdoor_navigation_key="nav1",
         geomag_map=None,
         own_grid_array=None,
         own_grid_map_path=None,
@@ -27,6 +29,8 @@ class Initializer:
         self.uji_test_file = uji_test_file
         self.own_data_dir = own_data_dir
         self.own_dataset_key = own_dataset_key
+        self.outdoor_data_root = outdoor_data_root
+        self.outdoor_navigation_key = outdoor_navigation_key
         self.geomag_map = geomag_map
         self.own_grid_array = own_grid_array
         self.own_grid_map_path = own_grid_map_path
@@ -43,6 +47,11 @@ class Initializer:
                 own_grid_map_path=self.own_grid_map_path,
                 own_grid_format=self.own_grid_format,
                 own_grid_meta=self.own_grid_meta,
+            )
+        elif str(self.route_source).lower() == "outdoor" or str(self.sensor_source).lower() == "outdoor":
+            geomag_map = get_map(
+                source="outdoor",
+                outdoor_data_root=self.outdoor_data_root,
             )
         else:
             # Prefer building map; fallback to existing artifacts if optional deps are missing.
@@ -64,4 +73,6 @@ class Initializer:
             uji_test_file=self.uji_test_file,
             own_data_dir=self.own_data_dir,
             own_dataset_key=self.own_dataset_key,
+            outdoor_data_root=self.outdoor_data_root,
+            outdoor_navigation_key=self.outdoor_navigation_key,
         )

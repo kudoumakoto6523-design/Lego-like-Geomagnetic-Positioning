@@ -406,15 +406,19 @@ class GeomagPipeline:
             f"p95={stats['p95']:.3f}, final={stats['final']:.3f}"
         )
 
-    def run(self, show=True, output_png=None, max_frames=None):
+    def run(self, show=True, output_png=None, max_frames=None, progress_callback=None):
         geomag_map = self.context.geomag_map
         own_dataset_key = getattr(self.context, "own_dataset_key", None)
+        outdoor_data_root = getattr(self.context, "outdoor_data_root", "data/raw/outdoor_rtk_map")
+        outdoor_navigation_key = getattr(self.context, "outdoor_navigation_key", "nav1")
         route = get_true_route(
             source=self.context.route_source,
             data_root=self.context.data_root,
             uji_test_file=self.context.uji_test_file,
             own_data_dir=self.context.own_data_dir,
             own_dataset_key=own_dataset_key,
+            outdoor_data_root=outdoor_data_root,
+            outdoor_navigation_key=outdoor_navigation_key,
         )
         if not route:
             raise ValueError("True route is empty, cannot initialize particle filter.")
@@ -436,9 +440,15 @@ class GeomagPipeline:
             uji_test_file=self.context.uji_test_file,
             own_data_dir=self.context.own_data_dir,
             own_dataset_key=own_dataset_key,
+            outdoor_data_root=outdoor_data_root,
+            outdoor_navigation_key=outdoor_navigation_key,
         )
         if max_frames is not None:
             test_len = min(int(max_frames), int(test_len))
+        if self.context.route_source == "outdoor":
+            # Outdoor RTK truth is synchronized one-to-one with sensor frames.
+            # Keep quick/max-frame runs on the same portion of the route.
+            route = route[:test_len]
 
         def _print_progress(current, total, width=36):
             total = max(int(total), 1)
@@ -449,7 +459,17 @@ class GeomagPipeline:
             sys.stdout.write(f"\rProgress [{bar}] {current}/{total} ({ratio * 100:5.1f}%)")
             sys.stdout.flush()
 
-        _print_progress(0, test_len)
+        def _report_progress(current, total):
+            _print_progress(current, total)
+            if progress_callback is not None:
+                try:
+                    progress_callback(int(current), int(total), "PF / PDR 定位计算")
+                except Exception:
+                    # Progress reporting is observational and must not change
+                    # the numerical result of the experiment.
+                    pass
+
+        _report_progress(0, test_len)
         for i in range(test_len):
             mag, acc, gyro = get_sensor(
                 source=self.context.sensor_source,
@@ -457,11 +477,13 @@ class GeomagPipeline:
                 uji_test_file=self.context.uji_test_file,
                 own_data_dir=self.context.own_data_dir,
                 own_dataset_key=own_dataset_key,
+                outdoor_data_root=outdoor_data_root,
+                outdoor_navigation_key=outdoor_navigation_key,
             )
             sample_buffer.append([acc, gyro, mag])
 
             if not self.pdr_module.detect_step(sample_buffer):
-                _print_progress(i + 1, test_len)
+                _report_progress(i + 1, test_len)
                 continue
 
             step_len = self.pdr_module.estimate_step_len(sample_buffer)
@@ -486,7 +508,7 @@ class GeomagPipeline:
             pos_list.append(pos)
             particle_counts.append(len(pf_state.particles))
             sample_buffer.clear()
-            _print_progress(i + 1, test_len)
+            _report_progress(i + 1, test_len)
 
         sys.stdout.write("\n")
         sys.stdout.flush()
@@ -506,6 +528,7 @@ class GeomagPipeline:
             self._print_error_summary("PDR", pdr_error_stats)
             self._print_error_summary("PF ", pf_error_stats)
 
+        map_mode = "outdoormap" if isinstance(geomag_map, dict) and geomag_map.get("source") == "outdoor" else "ujimap"
         saved = visualize(
             pos_list=pos_list,
             pdr_list=pdr_list,
@@ -514,7 +537,7 @@ class GeomagPipeline:
             pdr_error_series=pdr_error_series,
             particle_counts=particle_counts,
             geomag_map=geomag_map,
-            mode="ujimap",
+            mode=map_mode,
             show=show,
             output_png=output_png,
         )

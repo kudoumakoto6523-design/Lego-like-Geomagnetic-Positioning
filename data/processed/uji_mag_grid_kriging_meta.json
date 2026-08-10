@@ -1,7 +1,7 @@
 {
   "source": "uji",
   "continuous_map": true,
-  "dataset_root": "data/raw/uji_indoorloc_mag/extracted/UJIIndoorLoc-Mag/UJIIndoorLoc-Mag",
+  "dataset_root": "data\\raw\\uji_indoorloc_mag\\extracted\\UJIIndoorLoc-Mag\\UJIIndoorLoc-Mag",
   "points_total": 35769,
   "points_used_for_kriging": 2500,
   "variogram_model": "spherical",
@@ -20,7 +20,7 @@
     39.99383601528201,
     -0.07394679273973664
   ],
-  "output_model_npz": "data/processed/uji_mag_model_kriging.npz",
-  "output_preview_npz": "data/processed/uji_mag_grid_preview_kriging.npz",
-  "output_png": "data/processed/uji_mag_grid_kriging.png"
+  "output_model_npz": "data\\processed\\uji_mag_model_kriging.npz",
+  "output_preview_npz": "data\\processed\\uji_mag_grid_preview_kriging.npz",
+  "output_png": "data\\processed\\uji_mag_grid_kriging.png"
 }

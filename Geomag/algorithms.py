@@ -558,6 +558,9 @@ def _api_get_map(
     own_grid_map_path=None,
     own_grid_format="array",
     own_grid_meta=None,
+    outdoor_data_root=None,
+    outdoor_output_dir=None,
+    outdoor_force_rebuild=False,
 ):
     source = source.lower()
 
@@ -597,6 +600,16 @@ def _api_get_map(
         map_info["zip_path"] = str(zip_path)
         map_info["extract_dir"] = str(extract_dir)
         return map_info
+
+    if source == "outdoor":
+        from Geomag.outdoor_mapping import build_outdoor_rtk_map
+
+        return build_outdoor_rtk_map(
+            data_root=outdoor_data_root,
+            output_dir=outdoor_output_dir,
+            config_path=config_path,
+            force_rebuild=outdoor_force_rebuild,
+        )
 
     if source == "own":
         raw_map = _build_own_map_interface(
@@ -894,9 +907,25 @@ def _load_own_sensor_frames(own_data_dir):
     return frames
 
 
-def _sensor_stream_key(source, data_root, uji_test_file, own_data_dir, own_dataset_key=None):
+def _sensor_stream_key(
+    source,
+    data_root,
+    uji_test_file,
+    own_data_dir,
+    own_dataset_key=None,
+    outdoor_data_root=None,
+    outdoor_navigation_key=None,
+):
     key_token = str(own_dataset_key or "").strip()
-    return (source, str(Path(data_root)), str(uji_test_file), str(Path(own_data_dir)), key_token)
+    return (
+        source,
+        str(Path(data_root)),
+        str(uji_test_file),
+        str(Path(own_data_dir)),
+        key_token,
+        str(Path(outdoor_data_root or "data/raw/outdoor_rtk_map")),
+        str(outdoor_navigation_key or "nav1"),
+    )
 
 
 def _ensure_sensor_stream(
@@ -905,6 +934,8 @@ def _ensure_sensor_stream(
     uji_test_file,
     own_data_dir,
     own_dataset_key=None,
+    outdoor_data_root="data/raw/outdoor_rtk_map",
+    outdoor_navigation_key="nav1",
     reset=False,
 ):
     resolved_own_data_dir = (
@@ -918,6 +949,8 @@ def _ensure_sensor_stream(
         uji_test_file,
         own_data_dir=resolved_own_data_dir,
         own_dataset_key=own_dataset_key,
+        outdoor_data_root=outdoor_data_root,
+        outdoor_navigation_key=outdoor_navigation_key,
     )
     if reset or _SENSOR_STATE["frames"] is None or _SENSOR_STATE["key"] != key:
         if source == "uji":
@@ -935,6 +968,13 @@ def _ensure_sensor_stream(
             frames = _load_uji_sensor_frames(test_path)
         elif source == "own":
             frames = _load_own_sensor_frames(resolved_own_data_dir)
+        elif source == "outdoor":
+            from Geomag.outdoor_navigation import load_outdoor_navigation_session
+
+            frames = load_outdoor_navigation_session(
+                selection=outdoor_navigation_key,
+                data_root=outdoor_data_root,
+            )["frames"]
         else:
             raise ValueError(f"Unsupported sensor source: {source}")
 
@@ -961,6 +1001,8 @@ def _api_get_true_route(
     own_data_dir="data/Geomagnetic Navigation 2026-03-03 15-28-45",
     own_dataset_key=None,
     own_route_xy_m=None,
+    outdoor_data_root="data/raw/outdoor_rtk_map",
+    outdoor_navigation_key="nav1",
 ):
     source = source.lower()
 
@@ -1021,6 +1063,15 @@ def _api_get_true_route(
             raise ValueError(f"No valid latitude/longitude rows found in: {csv_path}")
         return route
 
+    if source == "outdoor":
+        from Geomag.outdoor_navigation import load_outdoor_navigation_session
+
+        navigation = load_outdoor_navigation_session(
+            selection=outdoor_navigation_key,
+            data_root=outdoor_data_root,
+        )
+        return navigation["route_latlon"]
+
     raise ValueError(f"Unsupported true-route source: {source}")
 
 
@@ -1031,6 +1082,8 @@ def _api_get_test_len(
     uji_test_file="tt01.txt",
     own_data_dir="data/Geomagnetic Navigation 2026-03-03 15-28-45",
     own_dataset_key=None,
+    outdoor_data_root="data/raw/outdoor_rtk_map",
+    outdoor_navigation_key="nav1",
 ):
     source = source.lower()
     frames = _ensure_sensor_stream(
@@ -1039,6 +1092,8 @@ def _api_get_test_len(
         uji_test_file=uji_test_file,
         own_data_dir=own_data_dir,
         own_dataset_key=own_dataset_key,
+        outdoor_data_root=outdoor_data_root,
+        outdoor_navigation_key=outdoor_navigation_key,
         reset=True,
     )
     _ALGO_STATE["heading_rad"] = 0.0
@@ -1054,6 +1109,8 @@ def _api_get_sensor(
     uji_test_file="tt01.txt",
     own_data_dir="data/Geomagnetic Navigation 2026-03-03 15-28-45",
     own_dataset_key=None,
+    outdoor_data_root="data/raw/outdoor_rtk_map",
+    outdoor_navigation_key="nav1",
 ):
     source = source.lower()
     frames = _ensure_sensor_stream(
@@ -1062,6 +1119,8 @@ def _api_get_sensor(
         uji_test_file=uji_test_file,
         own_data_dir=own_data_dir,
         own_dataset_key=own_dataset_key,
+        outdoor_data_root=outdoor_data_root,
+        outdoor_navigation_key=outdoor_navigation_key,
         reset=False,
     )
     idx = _SENSOR_STATE["index"]
@@ -1757,7 +1816,8 @@ def _api_visualize(
     if output_png is None:
         output_png = _default_visualize_output_png(mode=mode, meta=meta)
 
-    if mode == "ujimap":
+    if mode in {"ujimap", "outdoormap"}:
+        map_title = "Outdoor RTK Map" if mode == "outdoormap" else "UJI Map"
         if meta is None:
             defaults = ["map"]
             if route is not None:
@@ -1784,7 +1844,7 @@ def _api_visualize(
         has_sensor_plot = len(sensor_selectors) > 0
 
         if not (has_map or has_true_route or has_predicted or has_pdr or has_sensor_plot or has_error_plot or has_particles_plot):
-            raise ValueError(f"Unsupported ujimap meta options: {items}")
+            raise ValueError(f"Unsupported {mode} meta options: {items}")
 
         panel_order = []
         if has_map or has_true_route or has_predicted or has_pdr:
@@ -1816,7 +1876,7 @@ def _api_visualize(
             cbar.set_label("Magnetic Magnitude")
             ax_map.set_xlabel("X (m)")
             ax_map.set_ylabel("Y (m)")
-            ax_map.set_title("UJI Map")
+            ax_map.set_title(map_title)
             if model is not None and "origin_lat" in model and "origin_lon" in model:
                 origin_lat = float(model["origin_lat"][0])
                 origin_lon = float(model["origin_lon"][0])
@@ -1860,7 +1920,7 @@ def _api_visualize(
 
         if ax_map is not None:
             if has_map:
-                base_title = "UJI Map"
+                base_title = map_title
             else:
                 base_title = "Trajectories"
             overlays = []

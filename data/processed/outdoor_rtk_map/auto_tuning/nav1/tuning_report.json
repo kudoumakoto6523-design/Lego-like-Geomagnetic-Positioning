@@ -1,0 +1,931 @@
+{
+  "status": "completed",
+  "provider": "DeepSeek",
+  "settings": {
+    "api_key_configured": true,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "timeout_s": 120.0,
+    "max_tokens": 1800,
+    "max_trajectory_points": 160,
+    "temperature": 0.2
+  },
+  "navigation_key": "nav1",
+  "best_trial": 4,
+  "best_score": 4.954809,
+  "trials": [
+    {
+      "trial": 0,
+      "score": 5.559184849999999,
+      "error_stats": {
+        "pdr": {
+          "mean": 10.014871784980006,
+          "median": 10.439246709818532,
+          "p95": 14.926544524354027,
+          "final": 9.298879858978117
+        },
+        "pf": {
+          "mean": 3.585542265209244,
+          "median": 3.4845714805792602,
+          "p95": 5.891597127856854,
+          "final": 4.442806360229401
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.45
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 0.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.03,
+            "step_noise_std": 0.05
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 1.5,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_00.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_00.png",
+      "deepseek": {
+        "suggestion": {
+          "analysis_summary": "PDR轨迹严重发散，路径长度约为RTK的2.6倍，且方向系统性错误（向北偏移），导致PF无法有效纠正。主要问题在于步长估计过大和航向偏移。",
+          "parameter_patch": {
+            "pdr": {
+              "step_length_params": {
+                "weinberg_k": 0.35
+              },
+              "heading_params": {
+                "heading_offset_deg": 90.0
+              }
+            },
+            "pf": {
+              "motion_params": {
+                "heading_noise_std": 0.05,
+                "step_noise_std": 0.1
+              },
+              "weight_params": {
+                "sigma": 1.2
+              }
+            }
+          },
+          "expected_effect": "减小步长以缩短PDR路径长度，修正航向偏移以改善方向，增加运动噪声和降低权重sigma以增强PF的纠正能力，从而降低PF误差。",
+          "risk_notes": [
+            "航向偏移调整可能过大，需验证实际方向。",
+            "步长减小可能导致PDR路径过短，需观察。",
+            "增加运动噪声可能使粒子分布更分散，但可能增加计算量。"
+          ],
+          "stop_tuning": false
+        },
+        "validated_patch": {
+          "pdr": {
+            "step_length_params": {
+              "weinberg_k": 0.35
+            },
+            "heading_params": {
+              "heading_offset_deg": 90.0
+            }
+          },
+          "pf": {
+            "motion_params": {
+              "heading_noise_std": 0.05,
+              "step_noise_std": 0.1
+            },
+            "weight_params": {
+              "sigma": 1.2
+            }
+          }
+        },
+        "rejected_parameters": [],
+        "usage": {
+          "prompt_tokens": 15646,
+          "completion_tokens": 282,
+          "total_tokens": 15928,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 15646
+        }
+      }
+    },
+    {
+      "trial": 1,
+      "score": 6.29011725,
+      "error_stats": {
+        "pdr": {
+          "mean": 4.734930094821667,
+          "median": 5.213246436342515,
+          "p95": 7.908307937149484,
+          "final": 3.151420871424793
+        },
+        "pf": {
+          "mean": 4.22812439684051,
+          "median": 5.008267723252206,
+          "p95": 7.3009872420142035,
+          "final": 2.426238512443825
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.35
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 90.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.05,
+            "step_noise_std": 0.1
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 1.2,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_01.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_01.png",
+      "deepseek": {
+        "suggestion": {
+          "analysis_summary": "PDR轨迹在Y方向严重偏移，且路径长度约为RTK的两倍，表明存在系统性航向误差和步长过大问题。PF虽能部分纠正，但误差仍大。",
+          "parameter_patch": {
+            "pdr": {
+              "step_length_params": {
+                "weinberg_k": 0.3
+              }
+            },
+            "pf": {
+              "motion_params": {
+                "heading_noise_std": 0.08,
+                "step_noise_std": 0.15
+              },
+              "weight_params": {
+                "sigma": 1.0
+              }
+            }
+          },
+          "expected_effect": "减小步长以缩短PDR路径长度，增加运动噪声以增强粒子多样性，降低权重sigma以更依赖磁匹配，从而改善PF跟踪。",
+          "risk_notes": [
+            "步长减小可能导致PDR路径过短，但当前路径过长，风险可控。",
+            "增大运动噪声可能使粒子分布更分散，但可提高鲁棒性。",
+            "降低sigma可能使权重分布更尖锐，需注意粒子退化。"
+          ],
+          "stop_tuning": false
+        },
+        "validated_patch": {
+          "pdr": {
+            "step_length_params": {
+              "weinberg_k": 0.3
+            }
+          },
+          "pf": {
+            "motion_params": {
+              "heading_noise_std": 0.08,
+              "step_noise_std": 0.15
+            },
+            "weight_params": {
+              "sigma": 1.0
+            }
+          }
+        },
+        "rejected_parameters": [],
+        "usage": {
+          "prompt_tokens": 16198,
+          "completion_tokens": 263,
+          "total_tokens": 16461,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 16198
+        }
+      }
+    },
+    {
+      "trial": 2,
+      "score": 5.3298556999999995,
+      "error_stats": {
+        "pdr": {
+          "mean": 4.721534015181878,
+          "median": 5.2335433217922525,
+          "p95": 7.884453790306164,
+          "final": 3.111254312806004
+        },
+        "pf": {
+          "mean": 3.622385074025189,
+          "median": 4.343711657953493,
+          "p95": 5.8855757664138855,
+          "final": 1.3357912656301143
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.3
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 90.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.08,
+            "step_noise_std": 0.15
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 1.0,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_02.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_02.png",
+      "deepseek": {
+        "suggestion": {
+          "analysis_summary": "PDR轨迹长度约为RTK的1.73倍，且误差随距离增大而增大，表明步长估计偏大。PF误差虽小于PDR，但整体仍随PDR发散，且PF轨迹与PDR轨迹形态相似，说明PF未能有效纠正PDR的漂移。建议减小Weinberg系数以缩短步长，并适当增大PF的航向噪声以增强粒子多样性，帮助PF更好地探索地图。",
+          "parameter_patch": {
+            "pdr": {
+              "step_length_params": {
+                "weinberg_k": 0.25
+              }
+            },
+            "pf": {
+              "motion_params": {
+                "heading_noise_std": 0.12,
+                "step_noise_std": 0.2
+              }
+            }
+          },
+          "expected_effect": "减小步长可降低PDR轨迹长度，从而减小累积误差；增大PF运动噪声可提高粒子多样性，使PF更可能收敛到真实位置，预期降低PF的mean/p95/final误差。",
+          "risk_notes": [
+            "减小weinberg_k可能导致步长过短，使PDR轨迹长度不足，但当前长度明显偏大，风险较低。",
+            "增大运动噪声可能使粒子分布更分散，若地图匹配信息不足，可能导致PF误差增大，需观察。"
+          ],
+          "stop_tuning": false
+        },
+        "validated_patch": {
+          "pdr": {
+            "step_length_params": {
+              "weinberg_k": 0.25
+            }
+          },
+          "pf": {
+            "motion_params": {
+              "heading_noise_std": 0.12,
+              "step_noise_std": 0.2
+            }
+          }
+        },
+        "rejected_parameters": [],
+        "usage": {
+          "prompt_tokens": 16734,
+          "completion_tokens": 311,
+          "total_tokens": 17045,
+          "prompt_tokens_details": {
+            "cached_tokens": 512
+          },
+          "prompt_cache_hit_tokens": 512,
+          "prompt_cache_miss_tokens": 16222
+        }
+      }
+    },
+    {
+      "trial": 3,
+      "score": 5.119106749999999,
+      "error_stats": {
+        "pdr": {
+          "mean": 4.70883546960443,
+          "median": 5.2761281200265095,
+          "p95": 7.865991697004528,
+          "final": 3.0729370571215218
+        },
+        "pf": {
+          "mean": 3.488522868343548,
+          "median": 4.407225399215947,
+          "p95": 5.580568154591992,
+          "final": 1.774959359855474
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.25
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 90.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.12,
+            "step_noise_std": 0.2
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 1.0,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_03.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_03.png",
+      "deepseek": {
+        "suggestion": {
+          "analysis_summary": "PDR轨迹在x方向偏移约2米，y方向偏移约1米，且路径长度明显大于RTK，表明Weinberg系数偏大导致步长过长。PF误差虽小于PDR，但仍有系统性偏移，可能因磁匹配权重sigma过大或运动噪声不足。建议减小weinberg_k以缩短步长，并适当减小sigma以增强磁匹配约束。",
+          "parameter_patch": {
+            "pdr": {
+              "step_length_params": {
+                "weinberg_k": 0.22
+              }
+            },
+            "pf": {
+              "weight_params": {
+                "sigma": 0.8
+              }
+            }
+          },
+          "expected_effect": "减小步长以降低PDR路径长度，提高PF磁匹配权重以纠正偏移，预期降低mean和p95误差。",
+          "risk_notes": [
+            "weinberg_k过小可能导致步长不足，路径长度偏短。",
+            "sigma过小可能使粒子分布过于集中，增加发散风险。"
+          ],
+          "stop_tuning": false
+        },
+        "validated_patch": {
+          "pdr": {
+            "step_length_params": {
+              "weinberg_k": 0.22
+            }
+          },
+          "pf": {
+            "weight_params": {
+              "sigma": 0.8
+            }
+          }
+        },
+        "rejected_parameters": [],
+        "usage": {
+          "prompt_tokens": 17264,
+          "completion_tokens": 243,
+          "total_tokens": 17507,
+          "prompt_tokens_details": {
+            "cached_tokens": 512
+          },
+          "prompt_cache_hit_tokens": 512,
+          "prompt_cache_miss_tokens": 16752
+        }
+      }
+    },
+    {
+      "trial": 4,
+      "score": 4.954809,
+      "error_stats": {
+        "pdr": {
+          "mean": 4.701534731274529,
+          "median": 5.301736521788682,
+          "p95": 7.855094227985596,
+          "final": 3.0508634955540845
+        },
+        "pf": {
+          "mean": 3.469618864765245,
+          "median": 3.9454672642862074,
+          "p95": 5.00045259919986,
+          "final": 2.1303807216976285
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.22
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 90.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.12,
+            "step_noise_std": 0.2
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 0.8,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_04.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_04.png",
+      "deepseek": {
+        "suggestion": {
+          "analysis_summary": "PDR轨迹在起始段与RTK接近，但随后在Y方向持续偏移约1米，且整体路径长度偏长（31.03m vs 24.41m），表明步长估计偏大。PF轨迹虽然整体误差较小，但在后半段出现明显偏移，可能因磁匹配权重sigma过大导致粒子过于分散，或运动噪声不足。当前weinberg_k=0.22已接近下限，但PDR路径长度仍偏长，建议微调至0.20。PF的sigma从1.0降至0.8后，mean误差略有改善，但p95和final误差仍较高，建议进一步降低sigma至0.6以增强粒子收敛。同时，适当增加heading_noise_std至0.15以应对航向漂移。",
+          "parameter_patch": {
+            "pdr": {
+              "step_length_params": {
+                "weinberg_k": 0.2
+              }
+            },
+            "pf": {
+              "motion_params": {
+                "heading_noise_std": 0.15
+              },
+              "weight_params": {
+                "sigma": 0.6
+              }
+            }
+          },
+          "expected_effect": "减小步长估计，使PDR路径长度更接近RTK；降低PF权重sigma，使粒子更集中于高权重区域，从而降低mean和p95误差；增加航向噪声以应对可能的航向漂移。",
+          "risk_notes": [
+            "weinberg_k过小可能导致步长估计不足，使PDR路径长度偏短。",
+            "sigma过小可能导致粒子多样性降低，增加粒子退化风险。",
+            "heading_noise_std增加可能使粒子分布更分散，但有助于纠正航向漂移。"
+          ],
+          "stop_tuning": false
+        },
+        "validated_patch": {
+          "pdr": {
+            "step_length_params": {
+              "weinberg_k": 0.2
+            }
+          },
+          "pf": {
+            "motion_params": {
+              "heading_noise_std": 0.15
+            },
+            "weight_params": {
+              "sigma": 0.6
+            }
+          }
+        },
+        "rejected_parameters": [],
+        "usage": {
+          "prompt_tokens": 17774,
+          "completion_tokens": 398,
+          "total_tokens": 18172,
+          "prompt_tokens_details": {
+            "cached_tokens": 512
+          },
+          "prompt_cache_hit_tokens": 512,
+          "prompt_cache_miss_tokens": 17262
+        }
+      }
+    },
+    {
+      "trial": 5,
+      "score": 5.2651658999999995,
+      "error_stats": {
+        "pdr": {
+          "mean": 4.69679831897785,
+          "median": 5.318832372977303,
+          "p95": 7.8500724716380095,
+          "final": 3.0365391127205896
+        },
+        "pf": {
+          "mean": 3.5637670999889295,
+          "median": 4.111433378914237,
+          "p95": 5.866235855612012,
+          "final": 1.484351659921835
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.2
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 90.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.15,
+            "step_noise_std": 0.2
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 0.6,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_05.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_05.png",
+      "deepseek": {
+        "suggestion": {
+          "analysis_summary": "PDR轨迹整体向北偏移约1米，且路径长度比RTK长15%，表明Weinberg系数偏大。PF误差虽小于PDR，但轨迹仍整体偏北，且中段误差较大，说明PF未能有效纠正PDR的航向偏移。建议减小Weinberg系数以缩短步长，并增大PF的航向噪声以增强粒子探索能力，同时适当降低sigma以增加对磁匹配的信任。",
+          "parameter_patch": {
+            "pdr": {
+              "step_length_params": {
+                "weinberg_k": 0.18
+              }
+            },
+            "pf": {
+              "motion_params": {
+                "heading_noise_std": 0.2
+              },
+              "weight_params": {
+                "sigma": 0.5
+              }
+            }
+          },
+          "expected_effect": "减小步长以缩短PDR路径长度，增大航向噪声使粒子分布更广，降低sigma使PF更依赖磁匹配，预期可降低PF的mean和p95误差。",
+          "risk_notes": [
+            "减小Weinberg系数可能导致步长过短，PDR路径长度不足，但当前路径偏长，风险较低。",
+            "增大航向噪声可能使粒子分布过于分散，增加计算负担，但粒子数上限允许。",
+            "降低sigma可能使PF对磁匹配过于敏感，若磁匹配不准确可能导致误差增大。"
+          ],
+          "stop_tuning": false
+        },
+        "validated_patch": {
+          "pdr": {
+            "step_length_params": {
+              "weinberg_k": 0.18
+            }
+          },
+          "pf": {
+            "motion_params": {
+              "heading_noise_std": 0.2
+            },
+            "weight_params": {
+              "sigma": 0.5
+            }
+          }
+        },
+        "rejected_parameters": [],
+        "usage": {
+          "prompt_tokens": 18299,
+          "completion_tokens": 330,
+          "total_tokens": 18629,
+          "prompt_tokens_details": {
+            "cached_tokens": 512
+          },
+          "prompt_cache_hit_tokens": 512,
+          "prompt_cache_miss_tokens": 17787
+        }
+      }
+    },
+    {
+      "trial": 6,
+      "score": 5.02848505,
+      "error_stats": {
+        "pdr": {
+          "mean": 4.692165746029589,
+          "median": 5.321036376856639,
+          "p95": 7.848729641035209,
+          "final": 3.0225329967653507
+        },
+        "pf": {
+          "mean": 3.402861454464579,
+          "median": 4.229308250891562,
+          "p95": 5.564062705248781,
+          "final": 2.125758924737132
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.18
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 90.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.2,
+            "step_noise_std": 0.2
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 0.5,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_06.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\trial_06.png"
+    }
+  ],
+  "best_parameters": {
+    "pdr": {
+      "step_judge": "peak_dynamic",
+      "step_judge_params": {
+        "peak_sigma": 0.45,
+        "peak_prominence": 0.3,
+        "min_samples_per_step": 15
+      },
+      "step_length": "weinberg",
+      "step_length_params": {
+        "weinberg_k": 0.22
+      },
+      "heading": "gyro",
+      "heading_params": {
+        "dt": null,
+        "heading_offset_deg": 90.0
+      },
+      "mag": "norm_mean",
+      "mag_params": {}
+    },
+    "pf": {
+      "motion": "gaussian",
+      "motion_params": {
+        "heading_noise_std": 0.12,
+        "step_noise_std": 0.2
+      },
+      "weight": "ddtw",
+      "weight_params": {
+        "sigma": 0.8,
+        "max_hist": 100
+      },
+      "particle_size": "kld",
+      "particle_size_params": {
+        "epsilon": 0.1,
+        "bin_size_xy": 0.25,
+        "bin_size_theta": 0.35
+      },
+      "resample_trigger": "ess_or_target",
+      "resample_trigger_params": {
+        "ess_ratio_threshold": 0.4
+      },
+      "resample": "cso",
+      "resample_params": {},
+      "state_params": {
+        "num_particles": 3000,
+        "min_particles": 1000,
+        "max_particles": 1000000
+      },
+      "stage_order": [
+        "predict",
+        "update",
+        "particle_size",
+        "resample_decision",
+        "resample"
+      ]
+    }
+  },
+  "best_parameters_path": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav1\\best_parameters.json"
+}

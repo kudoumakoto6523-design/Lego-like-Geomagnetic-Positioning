@@ -1,0 +1,9 @@
+{
+  "api_key": "sk-ee304218918e436bafec3a6e82d8c741",
+  "base_url": "https://api.deepseek.com",
+  "model": "deepseek-v4-flash",
+  "timeout_s": 120,
+  "max_tokens": 1800,
+  "max_trajectory_points": 160,
+  "temperature": 0.2
+}

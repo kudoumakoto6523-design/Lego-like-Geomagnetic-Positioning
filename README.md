@@ -1,6 +1,6 @@
 # Lego-like Geomagnetic Positioning
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
+![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 
@@ -12,7 +12,20 @@ bash run.sh
 
 ## Windows 端：
 
-直接运行 `run.bat`
+双击 `run.bat`。脚本会在项目根目录自动创建 `.venv`、安装依赖并打开 Bokeh 页面。
+
+只配置环境、不启动网页服务：
+
+```bat
+run.bat --setup-only
+```
+
+### PyCharm
+
+1. 在 PyCharm 中选择 `File -> Open`，打开本项目根目录。
+2. 项目已配置为使用 `.venv\Scripts\python.exe`。
+3. 运行网页界面时，在 PyCharm Terminal 中执行 `run.bat`；运行算法入口时直接运行 `main.py`。
+
 # First of All
 This is the package I am using for testing my own geomagnetic positioning project using Particle filter, and I am trying to make the project **more lego-like such as pytorch** , and you can see some of the characteristics are from pytorch, actually. I am going to make this a acedemic-directed tool, 
 everyone who come up with an idea of, whatever the filter problem is, can immediately turn on the mac, quickly have a simulation, and feel free to build anything you like. World of Machine Learning can do it, I hope we will do it. 
@@ -64,8 +77,9 @@ Python `>= 3.11` is required.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+# macOS/Linux: source .venv/bin/activate
+# Windows: .venv\Scripts\activate
+python -m pip install -e .
 ```
 
 Current package dependencies from [`pyproject.toml`](pyproject.toml):
@@ -73,6 +87,8 @@ Current package dependencies from [`pyproject.toml`](pyproject.toml):
 - `numpy`
 - `pykrige`
 - `matplotlib`
+- `gstools`
+- `bokeh`
 
 ## Quick Start
 
@@ -205,10 +221,100 @@ Current block families include:
 from Geomag.algorithms import get_map
 ```
 
-Two branches are currently supported:
+Three map sources are currently supported:
 
 - `source="uji"`: build a continuous map from UJIIndoorLoc-Mag
 - `source="own"`: use a user-defined magnetic map, with direct matrix input preferred
+- `source="outdoor"`: build the outdoor RTK map from map-building sessions
+
+The experiment runner has three isomorphic branches: `uji`, `own`, and
+`outdoor`. The outdoor branch uses the map-building data for its map and keeps
+the navigation data separate as the test stream.
+
+### Outdoor RTK Map
+
+Only the 17 `Geomagnetic Map Building` archives and `LOG00040.TXT` are used.
+Because the RTK log contains positions beyond the survey itself, the builder
+first derives the survey time range from each archive's `meta/time.csv`, then
+keeps only overlapping RTK GGA records with fix quality 4. Sensor samples are
+aggregated into 0.15 m cells and the entire rectangular map is filled at 0.10 m
+spacing using PyKrige Ordinary Kriging with an exponential variogram.
+
+```python
+from Geomag.algorithms import get_map
+
+outdoor_map = get_map(
+    source="outdoor",
+    outdoor_force_rebuild=True,
+)
+print(outdoor_map["output_png"])
+```
+
+Configuration lives under `[tool.outdoor_map_builder]` in `pyproject.toml`.
+The standalone map-only example is `examples/main_outdoor_map.py`.
+
+### Outdoor RTK Test Branch
+
+The five `Geomagnetic Navigation` archives are outdoor test runs. Their
+accelerometer, gyroscope, and magnetometer channels are synchronized on the
+accelerometer time axis. `LOG00042.TXT` is aligned to the same timestamps and
+provides the RTK ground-truth route. Only checksum-valid RTK fix-quality-4
+positions are used.
+
+Data roles are kept separate:
+
+- `Geomagnetic Map Building` + `LOG00040.TXT`: build the outdoor magnetic map
+- `Geomagnetic Navigation`: positioning-test sensor input
+- `LOG00042.TXT`: positioning-test RTK ground truth
+
+Run a test from the command line:
+
+```bash
+python main.py --branch outdoor --outdoor nav1 --no-show
+```
+
+Available selectors are `nav1` through `nav5` (or `1` through `5`). For a quick
+pipeline check, append `--max-frames 300`. A code example is available at
+`examples/main_outdoor_simulation.py`.
+
+### DeepSeek Automatic Parameter Tuning
+
+The backend can run an iterative `evaluate -> suggest -> validate -> rerun ->
+keep best` loop for the outdoor branch. DeepSeek receives downsampled but real
+RTK/PDR/PF coordinates, error statistics, the current PDR/PF configuration, and
+previous-trial results. It returns JSON parameter patches only; generated code
+is never executed. The prompt treats PDR as the primary tuning target: it first
+optimizes step detection, step length, and heading against RTK, and only tunes
+PF parameters after PDR has converged or the remaining error is clearly PF-side.
+
+The API-key slot is intentionally blank in
+`config/deepseek_auto_tuning.json`. Prefer setting the key through the
+environment so it cannot be committed accidentally:
+
+```powershell
+$env:DEEPSEEK_API_KEY="your-key-here"
+```
+
+The default model is the lower-cost `deepseek-v4-flash`, with thinking disabled
+for this bounded task. Preview the complete request without contacting DeepSeek:
+
+```bash
+python main.py --branch outdoor --outdoor nav4 --max-frames 300 --tune-dry-run --no-show
+```
+
+Run three model-guided proposals (four experiment trials including baseline):
+
+```bash
+python main.py --branch outdoor --outdoor nav4 --auto-tune --tune-iterations 3 --no-show
+```
+
+The public one-step backend interface is `Geomag.suggest_parameters(...)`.
+Only whitelisted numeric PDR/PF parameters are accepted, with type and range
+checks plus `min_particles <= num_particles <= max_particles` validation.
+Reports are written below `data/processed/outdoor_rtk_map/auto_tuning/`.
+
+Privacy note: enabling live tuning sends the downsampled local-coordinate RTK,
+PDR, and PF trajectories in the prompt to the configured DeepSeek API endpoint.
 
 ### UJI Branch
 

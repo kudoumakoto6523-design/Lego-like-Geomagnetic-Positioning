@@ -3,6 +3,7 @@ import argparse
 from Geomag.branching import (
     BranchConfig,
     parse_route_control_points,
+    resolve_outdoor_selection,
     resolve_own_selection,
     resolve_uji_selection,
     run_branch_simulation,
@@ -10,9 +11,10 @@ from Geomag.branching import (
 
 
 # Change these variables for the usual workflow.
-branch = "own"  # "uji" or "own"
+branch = "own"  # "uji", "own", or "outdoor"
 uji = "2"  # "tt01"..."tt11", "1"..."11", "tt02.txt", or a raw test-file path.
 own = "route1_run2"  # "route1_run1", "route1_run2", "route2_run1", "own_branch", or a raw data/own_data directory.
+outdoor = "nav1"  # "nav1"..."nav5" or "1"..."5".
 
 
 def build_config_from_args(args):
@@ -24,6 +26,12 @@ def build_config_from_args(args):
     own_profile = args.own_profile or own_defaults["own_profile"]
     own_dataset_key = args.own_dataset_key or own_defaults["own_dataset_key"]
     own_data_dir = args.own_data_dir or own_defaults["own_data_dir"]
+
+    outdoor_defaults = resolve_outdoor_selection(args.outdoor)
+    outdoor_navigation_key = (
+        args.outdoor_navigation_key or outdoor_defaults["outdoor_navigation_key"]
+    )
+    outdoor_data_root = args.outdoor_data_root or outdoor_defaults["outdoor_data_root"]
 
     return BranchConfig(
         branch=args.branch,
@@ -46,12 +54,21 @@ def build_config_from_args(args):
         own_heading_offset_deg=args.own_heading_offset_deg,
         own_trim_head=args.own_trim_head,
         own_trim_tail=args.own_trim_tail,
+        outdoor_navigation_key=outdoor_navigation_key,
+        outdoor_data_root=outdoor_data_root,
+        outdoor_initial_heading_deg=args.outdoor_initial_heading_deg,
+        outdoor_use_route_initial_heading=not args.outdoor_no_route_initial_heading,
+        outdoor_heading_offset_deg=args.outdoor_heading_offset_deg,
+        outdoor_auto_tune=args.auto_tune or args.tune_dry_run,
+        outdoor_tune_iterations=args.tune_iterations,
+        outdoor_tune_dry_run=args.tune_dry_run,
+        outdoor_tune_config_path=args.deepseek_config,
     )
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run a geomagnetic positioning simulation by branch.")
-    parser.add_argument("--branch", choices=["uji", "own"], default=branch, help="Simulation branch.")
+    parser.add_argument("--branch", choices=["uji", "own", "outdoor"], default=branch, help="Simulation branch.")
     parser.add_argument("--window-size", type=int, default=400, help="Geomagnetic history window.")
     parser.add_argument("--max-frames", type=int, default=None, help="Limit consumed sensor frames for quick checks.")
     parser.add_argument("--no-show", action="store_true", help="Save plots without opening a window.")
@@ -75,6 +92,17 @@ def main():
     parser.add_argument("--own-heading-offset-deg", type=float, default=-90.0, help="Own heading offset after correction.")
     parser.add_argument("--own-trim-head", type=int, default=0, help="Drop first N own-data sensor frames.")
     parser.add_argument("--own-trim-tail", type=int, default=0, help="Drop last N own-data sensor frames.")
+
+    parser.add_argument("--outdoor", type=str, default=outdoor, help="Outdoor RTK test selector: nav1..nav5 or 1..5.")
+    parser.add_argument("--outdoor-navigation-key", type=str, default=None, help="Low-level outdoor navigation selector override.")
+    parser.add_argument("--outdoor-data-root", type=str, default=None, help="Outdoor map/navigation data root.")
+    parser.add_argument("--outdoor-initial-heading-deg", type=float, default=None, help="Known outdoor initial heading: 0=East, 90=North.")
+    parser.add_argument("--outdoor-no-route-initial-heading", action="store_true", help="Do not infer outdoor initial heading from RTK truth.")
+    parser.add_argument("--outdoor-heading-offset-deg", type=float, default=0.0, help="Outdoor gyroscope heading offset.")
+    parser.add_argument("--auto-tune", action="store_true", help="Use DeepSeek to iteratively tune outdoor PDR/PF parameters.")
+    parser.add_argument("--tune-iterations", type=int, default=3, help="Number of DeepSeek parameter proposals (1..20).")
+    parser.add_argument("--tune-dry-run", action="store_true", help="Run one baseline and write the DeepSeek request without calling the API.")
+    parser.add_argument("--deepseek-config", type=str, default="config/deepseek_auto_tuning.json", help="DeepSeek auto-tuning configuration path.")
 
     args = parser.parse_args()
     return run_branch_simulation(build_config_from_args(args))

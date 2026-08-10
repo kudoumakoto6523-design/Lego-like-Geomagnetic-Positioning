@@ -4,7 +4,9 @@ Version: 0.1.0
 Summary: Geomagnetic + IMU fusion experiments with PF/DDTW on UJIIndoorLoc-Mag.
 Requires-Python: >=3.11
 Requires-Dist: numpy>=1.24
+Requires-Dist: pandas>=2.0
+Requires-Dist: scipy>=1.10
 Requires-Dist: pykrige>=1.7
 Requires-Dist: matplotlib>=3.7
 Requires-Dist: gstools
-Requires-Dist: pykrige
+Requires-Dist: bokeh>=3.4

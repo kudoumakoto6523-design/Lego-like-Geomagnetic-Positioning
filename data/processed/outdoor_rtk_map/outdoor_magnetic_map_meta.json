@@ -1,0 +1,47 @@
+{
+  "source": "outdoor",
+  "continuous_map": true,
+  "coordinate_system": "local ENU equirectangular approximation",
+  "origin_latlon": [
+    43.8794720625,
+    125.29982597833333
+  ],
+  "time_method": "meta/time.csv START system time + sensor experiment time",
+  "rtk_timezone": "NMEA UTC converted to UTC+08:00",
+  "rtk_selection": "only GGA records overlapping the magnetic survey time window",
+  "rtk_source_records": 33044,
+  "rtk_selected_records": 23389,
+  "rtk_selected_source_lines": [
+    7421,
+    30809
+  ],
+  "survey_time_seconds_of_day": [
+    74400.592825,
+    76735.457025
+  ],
+  "map_sessions": 17,
+  "map_input_samples": 47525,
+  "map_usable_samples": 47525,
+  "spatial_cells": 1063,
+  "cell_size_m": 0.15,
+  "grid_spacing_m": 0.1,
+  "grid_shape": [
+    94,
+    89
+  ],
+  "filled_grid_cells": 8366,
+  "total_grid_cells": 8366,
+  "interpolation_method": "PyKrige OrdinaryKriging",
+  "variogram_model": "exponential",
+  "variogram_nlags": 12,
+  "variogram_weight": true,
+  "kriging_pseudo_inverse": true,
+  "output_model_npz": "data\\processed\\outdoor_rtk_map\\outdoor_magnetic_map_kriging.npz",
+  "output_preview_npz": "data\\processed\\outdoor_rtk_map\\outdoor_magnetic_map_kriging.npz",
+  "output_json": "data\\processed\\outdoor_rtk_map\\outdoor_magnetic_map_meta.json",
+  "output_png": "data\\processed\\outdoor_rtk_map\\outdoor_magnetic_map_kriging.png",
+  "output_variance_png": "data\\processed\\outdoor_rtk_map\\outdoor_kriging_variance.png",
+  "output_cells_csv": "data\\processed\\outdoor_rtk_map\\outdoor_map_cells.csv",
+  "output_samples_csv": "data\\processed\\outdoor_rtk_map\\outdoor_map_samples_corrected.csv",
+  "output_session_summary_csv": "data\\processed\\outdoor_rtk_map\\outdoor_session_summary.csv"
+}

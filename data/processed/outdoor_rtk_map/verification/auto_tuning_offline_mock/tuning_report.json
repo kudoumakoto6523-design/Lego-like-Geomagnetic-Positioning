@@ -1,0 +1,199 @@
+{
+  "status": "completed",
+  "provider": "DeepSeek",
+  "settings": {
+    "api_key_configured": true,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "timeout_s": 120.0,
+    "max_tokens": 1800,
+    "max_trajectory_points": 160,
+    "temperature": 0.2
+  },
+  "navigation_key": "nav4",
+  "best_trial": 0,
+  "best_score": 2.0358676,
+  "trials": [
+    {
+      "trial": 0,
+      "score": 2.0358676,
+      "error_stats": {
+        "pdr": {
+          "mean": 1.4124974588628894,
+          "median": 1.4040523407929184,
+          "p95": 2.234646696811161,
+          "final": 2.326198744550447
+        },
+        "pf": {
+          "mean": 1.4097241559605966,
+          "median": 1.406127290689383,
+          "p95": 2.2220747339030664,
+          "final": 2.310955633148347
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.45
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 0.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.03,
+            "step_noise_std": 0.05
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 1.5,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav4\\trial_00.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav4\\trial_00.png",
+      "deepseek": {
+        "suggestion": {
+          "analysis_summary": "offline loop test",
+          "parameter_patch": {
+            "pf": {
+              "weight_params": {
+                "sigma": 1.8
+              }
+            }
+          },
+          "expected_effect": "test",
+          "risk_notes": [],
+          "stop_tuning": false
+        },
+        "validated_patch": {
+          "pf": {
+            "weight_params": {
+              "sigma": 1.8
+            }
+          }
+        },
+        "rejected_parameters": [],
+        "usage": {
+          "prompt_tokens": 123,
+          "completion_tokens": 45
+        }
+      }
+    },
+    {
+      "trial": 1,
+      "score": 2.0385181,
+      "error_stats": {
+        "pdr": {
+          "mean": 1.4124974588628894,
+          "median": 1.4040523407929184,
+          "p95": 2.234646696811161,
+          "final": 2.326198744550447
+        },
+        "pf": {
+          "mean": 1.4111566279218577,
+          "median": 1.406127290689383,
+          "p95": 2.2269451385713537,
+          "final": 2.3166855209933908
+        }
+      },
+      "parameters": {
+        "pdr": {
+          "step_judge": "peak_dynamic",
+          "step_judge_params": {
+            "peak_sigma": 0.45,
+            "peak_prominence": 0.3,
+            "min_samples_per_step": 15
+          },
+          "step_length": "weinberg",
+          "step_length_params": {
+            "weinberg_k": 0.45
+          },
+          "heading": "gyro",
+          "heading_params": {
+            "dt": null,
+            "heading_offset_deg": 0.0
+          },
+          "mag": "norm_mean",
+          "mag_params": {}
+        },
+        "pf": {
+          "motion": "gaussian",
+          "motion_params": {
+            "heading_noise_std": 0.03,
+            "step_noise_std": 0.05
+          },
+          "weight": "ddtw",
+          "weight_params": {
+            "sigma": 1.8,
+            "max_hist": 100
+          },
+          "particle_size": "kld",
+          "particle_size_params": {
+            "epsilon": 0.1,
+            "bin_size_xy": 0.25,
+            "bin_size_theta": 0.35
+          },
+          "resample_trigger": "ess_or_target",
+          "resample_trigger_params": {
+            "ess_ratio_threshold": 0.4
+          },
+          "resample": "cso",
+          "resample_params": {},
+          "state_params": {
+            "num_particles": 3000,
+            "min_particles": 1000,
+            "max_particles": 1000000
+          },
+          "stage_order": [
+            "predict",
+            "update",
+            "particle_size",
+            "resample_decision",
+            "resample"
+          ]
+        }
+      },
+      "output_json": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav4\\trial_01.json",
+      "output_png": "data\\processed\\outdoor_rtk_map\\auto_tuning\\nav4\\trial_01.png"
+    }
+  ]
+}
