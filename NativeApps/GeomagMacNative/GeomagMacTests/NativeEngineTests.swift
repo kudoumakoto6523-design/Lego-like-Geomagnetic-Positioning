@@ -2,6 +2,21 @@ import XCTest
 @testable import GeomagMac
 
 final class NativeEngineTests: XCTestCase {
+    func testRouteGeometryValidationRejectsImmediateBacktrack() {
+        XCTAssertNotNil(DatasetValidator.routeGeometryIssue("0,0; 0.6,1.2; 0,1.2; 1.8,1.2"))
+        XCTAssertNil(DatasetValidator.routeGeometryIssue("0,0; 0,1; 1,1; 1,0"))
+    }
+
+    func testPauseIntervalClosesWhenCaptureStopsWhilePaused() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("csv")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("Time (s),Type\n1.0,pause\n4.0,recording_stop\n".utf8).write(to: url)
+
+        XCTAssertEqual(DatasetValidator.readMappingPauseIntervals(url), [1.0...4.0])
+    }
+
     func testTurnContinuityGuardSuppressesSidewaysModeJumpWithoutMapCorner() {
         let previous = XYPoint(x: 5.8, y: 4.8)
         let raw = XYPoint(x: 5.57, y: 4.77)
@@ -267,12 +282,60 @@ final class NativeEngineTests: XCTestCase {
             createdAt: first.createdAt, sourceDatasetKeys: ["second_capture"],
             referenceRoute: first.referenceRoute, samples: first.samples,
             supportRadiusM: first.supportRadiusM,
-            coordinateFrame: first.coordinateFrame, gridCellSizeM: first.gridCellSizeM
+            coordinateFrame: first.coordinateFrame, gridCellSizeM: first.gridCellSizeM,
+            samplesFollowPath: first.samplesFollowPath
         )
         let merged = try GenericMagneticMapStore.merging(first, with: compatible)
 
         XCTAssertEqual(Set(merged.sourceDatasetKeys), ["route_13_1", "second_capture"])
         XCTAssertFalse(merged.samples.isEmpty)
+        XCTAssertEqual(merged.localizationMode, first.localizationMode)
+    }
+
+    func testIncrementalGridMergeBalancesSourcesAndRejectsClampedStepScale() throws {
+        func document(
+            sources: [String],
+            norm: Double,
+            directionCount: Int,
+            stepScale: Double
+        ) throws -> GenericMagneticMapDocument {
+            let samples = (0..<8).map { index in
+                GenericMagneticMapSample(
+                    x: Double(index % 2) * 0.4 + 0.2,
+                    y: Double(index / 2) * 0.4 + 0.2,
+                    magneticNormUT: norm,
+                    magneticXUT: norm / 2,
+                    magneticYUT: norm / 3,
+                    magneticZUT: norm / 4,
+                    varianceUT2: 1,
+                    observationCount: 100,
+                    directionCount: directionCount,
+                    headingRadians: 0
+                )
+            }
+            return try GenericMagneticMapDocument(
+                schemaVersion: 1, id: "balanced_room", name: "Balanced Room",
+                createdAt: Date(), sourceDatasetKeys: sources,
+                referenceRoute: [XYPoint(x: 0, y: 0), XYPoint(x: 0.6, y: 1.4)],
+                samples: samples, supportRadiusM: 0.4,
+                coordinateFrame: "room-a", gridCellSizeM: 0.4,
+                samplesFollowPath: false, pdrStepLengthScale: stepScale
+            ).validated()
+        }
+
+        let established = try document(
+            sources: ["map_1", "map_2", "map_3"],
+            norm: 40, directionCount: 4, stepScale: 0.34
+        )
+        let supplement = try document(
+            sources: ["map_4"],
+            norm: 60, directionCount: 2, stepScale: 0.20
+        )
+        let merged = try GenericMagneticMapStore.merging(established, with: supplement)
+
+        XCTAssertEqual(merged.samples[0].magneticNormUT, 45, accuracy: 1e-9)
+        XCTAssertEqual(merged.samples[0].directionCount, 4)
+        XCTAssertEqual(merged.pdrStepLengthScale, 0.34)
     }
 
     func testRoomMapQualityReportPreservesMissingObstacleCell() throws {

@@ -2,7 +2,44 @@ import Foundation
 import XCTest
 @testable import GeomagCapture
 
+@MainActor
 final class CapturePackageTests: XCTestCase {
+    func testGeneratedReverseRouteIsNotReversedTwice() {
+        let reversedRoute = [[2.0, 0.0], [1.0, 0.0], [0.0, 0.0]]
+
+        XCTAssertEqual(
+            MotionRecorder.orderedRoute(
+                reversedRoute,
+                reverseRoute: true,
+                inputIsReversed: true
+            ),
+            reversedRoute
+        )
+    }
+
+    func testForwardRouteIsReorderedForReverseCapture() {
+        let forwardRoute = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]
+
+        XCTAssertEqual(
+            MotionRecorder.orderedRoute(
+                forwardRoute,
+                reverseRoute: true,
+                inputIsReversed: false
+            ),
+            Array(forwardRoute.reversed())
+        )
+    }
+
+    func testMalformedRouteDoesNotSilentlyDropInvalidPoint() {
+        XCTAssertNil(MotionRecorder.parseRoute("0,0; bad-point; 1,1"))
+        XCTAssertNil(MotionRecorder.parseRoute("0,0; 1,1;"))
+    }
+
+    func testRouteValidationRejectsImmediateBacktrack() {
+        XCTAssertNotNil(MotionRecorder.routeIssue([[0, 0], [0.6, 1.2], [0, 1.2], [1.8, 1.2]]))
+        XCTAssertNil(MotionRecorder.routeIssue([[0, 0], [0, 1], [1, 1], [1, 0]]))
+    }
+
     func testPackageExportsRouteDirection() throws {
         let files = try CapturePackageBuilder.buildFiles(
             snapshot: makeSnapshot(routeDirection: "reverse")

@@ -134,7 +134,27 @@ enum NativePositioningEngine {
             min(max(supportRadiusM * 1.9, 0.32), 0.45)
         }
 
-        func sample(x: Double, y: Double) -> Double {
+        private func directionalProfile(
+            for sample: GenericMagneticMapSample,
+            heading: Double?
+        ) -> MagneticDirectionalProfile? {
+            guard let heading,
+                  let profiles = sample.directionalProfiles,
+                  (2...4).contains(profiles.count) else { return nil }
+            let rawBin = Int(floor((wrap(heading) + .pi) / (2 * .pi) * 8))
+            let targetBin = (rawBin % 8 + 8) % 8
+            guard let closest = profiles.min(by: {
+                min(abs($0.directionBin - targetBin), 8 - abs($0.directionBin - targetBin))
+                    < min(abs($1.directionBin - targetBin), 8 - abs($1.directionBin - targetBin))
+            }) else { return nil }
+            let distance = min(
+                abs(closest.directionBin - targetBin),
+                8 - abs(closest.directionBin - targetBin)
+            )
+            return distance == 0 && closest.observationCount >= 12 ? closest : nil
+        }
+
+        func sample(x: Double, y: Double, heading: Double? = nil) -> Double {
             if !scatteredSamples.isEmpty {
                 let nearest = scatteredSamples
                     .map { sample in
@@ -149,7 +169,11 @@ enum NativePositioningEngine {
                 for (sample, distance) in nearest {
                     let scale = max(supportRadiusM * 0.45, 0.20)
                     let weight = exp(-0.5 * pow(distance / scale, 2)) + 1e-9
-                    weighted += sample.magneticNormUT * weight
+                    let profileValue = directionalProfile(for: sample, heading: heading)?.magneticNormUT
+                    let value = profileValue.map {
+                        sample.magneticNormUT + 0.15 * ($0 - sample.magneticNormUT)
+                    } ?? sample.magneticNormUT
+                    weighted += value * weight
                     totalWeight += weight
                 }
                 return totalWeight > 0
@@ -176,7 +200,7 @@ enum NativePositioningEngine {
             return top + (bottom - top) * ty
         }
 
-        func sampleVector(x: Double, y: Double) -> Vector3? {
+        func sampleVector(x: Double, y: Double, heading: Double? = nil) -> Vector3? {
             let nearest = scatteredSamples.compactMap { sample -> (GenericMagneticMapSample, Double)? in
                 guard sample.magneticXUT != nil, sample.magneticYUT != nil, sample.magneticZUT != nil else {
                     return nil
@@ -193,9 +217,14 @@ enum NativePositioningEngine {
             var weightTotal = 0.0
             for (sample, distance) in nearest {
                 let weight = exp(-0.5 * pow(distance / scale, 2)) + 1e-9
-                xTotal += (sample.magneticXUT ?? 0) * weight
-                yTotal += (sample.magneticYUT ?? 0) * weight
-                zTotal += (sample.magneticZUT ?? 0) * weight
+                let profile = directionalProfile(for: sample, heading: heading)
+                func blend(_ general: Double?, _ directional: Double?) -> Double {
+                    let base = general ?? directional ?? 0
+                    return directional.map { base + 0.15 * ($0 - base) } ?? base
+                }
+                xTotal += blend(sample.magneticXUT, profile?.magneticXUT) * weight
+                yTotal += blend(sample.magneticYUT, profile?.magneticYUT) * weight
+                zTotal += blend(sample.magneticZUT, profile?.magneticZUT) * weight
                 weightTotal += weight
             }
             guard weightTotal > 0 else { return nil }
@@ -613,7 +642,12 @@ enum NativePositioningEngine {
         progress(0.05, "读取锚点建图采集")
         let frames = try loadFrames(from: datasetDirectory)
         let firstHeading = anchors.first?.headingDegrees.map { $0 * .pi / 180 } ?? 0
-        let detection = detectSteps(frames: frames, initialHeading: firstHeading, settings: settings)
+        let detection = detectSteps(
+            frames: frames,
+            initialHeading: firstHeading,
+            settings: settings,
+            activityGateEnabled: false
+        )
         let steps = detection.steps
         let referenceYaw = anchors.first?.deviceYawDegrees.map { $0 * .pi / 180 }
             ?? frames.first(where: { $0.deviceHeading != nil })?.deviceHeading?.yawRadians
@@ -698,6 +732,21 @@ enum NativePositioningEngine {
                 observationCount: accepted.count,
                 directionCount: Set(accepted.map(\.directionBin)).count
             )
+            let directionalProfiles = Dictionary(grouping: accepted, by: \.directionBin)
+                .compactMap { directionBin, observations -> MagneticDirectionalProfile? in
+                    guard observations.count >= 4 else { return nil }
+                    return MagneticDirectionalProfile(
+                        directionBin: directionBin,
+                        magneticNormUT: median(observations.map(\.norm)),
+                        magneticXUT: median(observations.map { $0.vector.x }),
+                        magneticYUT: median(observations.map { $0.vector.y }),
+                        magneticZUT: median(observations.map { $0.vector.z }),
+                        observationCount: observations.count
+                    )
+                }
+                .sorted { $0.directionBin < $1.directionBin }
+            samplesByKey[key]?.directionalProfiles = directionalProfiles.isEmpty
+                ? nil : directionalProfiles
             let sine = accepted.map { sin($0.heading) }.reduce(0, +)
             let cosine = accepted.map { cos($0.heading) }.reduce(0, +)
             samplesByKey[key]?.headingRadians = atan2(sine, cosine)
@@ -768,7 +817,8 @@ enum NativePositioningEngine {
         let stepDetection = detectSteps(
             frames: activeFrames,
             initialHeading: initialHeading,
-            settings: request.settings
+            settings: request.settings,
+            stabilizeFreeWalk: request.localizationMode == .roomAreaKnownStart
         )
         let steps = scaledSteps(
             stepDetection.steps,
@@ -1145,7 +1195,9 @@ enum NativePositioningEngine {
     private static func detectSteps(
         frames: [Frame],
         initialHeading: Double,
-        settings: AlgorithmSettings
+        settings: AlgorithmSettings,
+        activityGateEnabled: Bool = true,
+        stabilizeFreeWalk: Bool = false
     ) -> (steps: [Step], headingDiagnostics: HeadingDiagnostics) {
         let magnitudes = frames.map { $0.acceleration.magnitude }
         let stationaryRates = frames.compactMap { frame -> Double? in
@@ -1189,6 +1241,19 @@ enum NativePositioningEngine {
             width: max(5, Int((0.75 * sampleRate).rounded()))
         )
         let stepSignal = zip(shortTerm, baseline).map { $0.0 - $0.1 }
+        let activityEnergy = movingAverage(
+            stepSignal.map { $0 * $0 },
+            width: max(5, Int((1.5 * sampleRate).rounded()))
+        ).map { sqrt(max($0, 0)) }
+        let activityUpperQuartile = percentile(activityEnergy.sorted(), 0.75)
+        // Stop-heavy free walks contain long waits around manually marked points.
+        // Sensor tremor during those waits can look cadence-like, so only accept
+        // peaks inside sustained motion bursts when the whole capture is low-energy.
+        let usesActivityGate = activityGateEnabled && activityUpperQuartile < 0.36
+        let activityGate = max(
+            0.18,
+            (activityUpperQuartile < 0.30 ? 0.90 : 0.60) * activityUpperQuartile
+        )
         let cadencePeriod = dominantStepPeriod(signal: stepSignal, sampleRate: sampleRate)
         let minimumInterval = min(max(0.84 * cadencePeriod, 0.46), 0.68)
         let signalCenter = median(stepSignal)
@@ -1211,6 +1276,7 @@ enum NativePositioningEngine {
                 && stepSignal[index] >= stepSignal[index + 1]
                 && stepSignal[index] > threshold
                 && prominence > max(0.18, 0.85 * signalNoise)
+                && (!usesActivityGate || activityEnergy[index] >= activityGate)
             guard isPeak else { continue }
             if let last = steps.last,
                frames[index].time - last.time < minimumInterval { continue }
@@ -1283,7 +1349,63 @@ enum NativePositioningEngine {
             ))
             previousPeak = index + 1
         }
-        return (steps, headingResolution.diagnostics)
+        let stabilizedSteps = stabilizeFreeWalk && settings.headingSnapDegrees <= 0
+            ? stabilizeFreeWalkHeadings(steps: steps, frames: frames)
+            : steps
+        return (stabilizedSteps, headingResolution.diagnostics)
+    }
+
+    /// Smooths quiet walking locally and models each automatically detected
+    /// turn as one continuous heading transition. It does not assume 90° turns.
+    private static func stabilizeFreeWalkHeadings(
+        steps: [Step],
+        frames: [Frame]
+    ) -> [Step] {
+        guard steps.count >= 3 else { return steps }
+        let turns = detectQuarterTurnRegions(frames: frames)
+        func circularMean(_ values: [Double]) -> Double {
+            atan2(values.map(sin).reduce(0, +), values.map(cos).reduce(0, +))
+        }
+        func inTurn(_ time: Double) -> TurnRegion? {
+            turns.first { $0.onsetTime <= time && time <= $0.completionTime }
+        }
+        return steps.indices.map { index in
+            let step = steps[index]
+            let stabilized: Double
+            if let turn = inTurn(step.time) {
+                let before = steps.filter { $0.time < turn.onsetTime }.suffix(3).map(\.heading)
+                let after = steps.filter { $0.time > turn.completionTime }.prefix(3).map(\.heading)
+                if !before.isEmpty, !after.isEmpty {
+                    let incoming = circularMean(before)
+                    let outgoing = circularMean(after)
+                    let rawProgress = (step.time - turn.onsetTime)
+                        / max(turn.completionTime - turn.onsetTime, 1e-6)
+                    let progress = min(max(rawProgress, 0), 1)
+                    let eased = progress * progress * (3 - 2 * progress)
+                    stabilized = wrap(incoming + eased * wrap(outgoing - incoming))
+                } else {
+                    stabilized = step.heading
+                }
+            } else {
+                let lower = max(0, index - 1)
+                let upper = min(steps.count - 1, index + 1)
+                let neighbors = (lower...upper)
+                    .map { steps[$0] }
+                    .filter { inTurn($0.time) == nil }
+                    .map(\.heading)
+                stabilized = neighbors.isEmpty ? step.heading : circularMean(neighbors)
+            }
+            return Step(
+                frameIndex: step.frameIndex,
+                time: step.time,
+                length: step.length,
+                heading: wrap(stabilized),
+                sensorHeading: step.sensorHeading,
+                magneticMagnitude: step.magneticMagnitude,
+                alignedMagneticVector: step.alignedMagneticVector,
+                segmentIndex: step.segmentIndex
+            )
+        }
     }
 
     private static func movingAverage(_ values: [Double], width: Int) -> [Double] {
@@ -2046,6 +2168,8 @@ enum NativePositioningEngine {
                         particle.headingBias + rng.normal(standardDeviation: 0.003)
                     )
                 }
+                // Preserve heading continuity on straight/curved walking while
+                // temporarily widening the hypothesis set at a genuine turn.
                 let headingNoise = rng.normal(standardDeviation: 0.03)
                 let stepNoise = rng.normal(standardDeviation: 0.025)
                 // A peak detector inevitably sees an occasional phone-handling impulse.
@@ -2057,7 +2181,14 @@ enum NativePositioningEngine {
                         && hypot(particle.x - $0.x, particle.y - $0.y)
                             <= max(map.supportRadiusM * 1.6, 0.35)
                 } ?? false
-                if closedEndpointLocked {
+                if localizationMode == .roomAreaKnownStart, step.length > 0.08 {
+                    // In room-area localization the magnetic fingerprint can repeat
+                    // several metres away. A tiny stationary particle subset can then
+                    // win repeatedly and make the PF silently drop real walking steps.
+                    // Keep normal detected steps translational; short handling impulses
+                    // still use the false-step hypothesis below.
+                    stationaryPrior = 0
+                } else if closedEndpointLocked {
                     stationaryPrior = 0.995
                 } else if completedClosedLoop && endpointMagneticStable {
                     stationaryPrior = particle.stationaryHypothesis ? 0.985 : 0.38
@@ -2078,8 +2209,9 @@ enum NativePositioningEngine {
                     : 0
                 particle.stationaryHypothesis = !acceptsTranslation
                 particle.distanceTravelled += distance
-                particle.x += distance * cos(step.heading + particle.headingBias + headingNoise)
-                particle.y += distance * sin(step.heading + particle.headingBias + headingNoise)
+                let particleHeading = wrap(step.heading + particle.headingBias + headingNoise)
+                particle.x += distance * cos(particleHeading)
+                particle.y += distance * sin(particleHeading)
                 var supportPenalty = 1.0
                 if !map.contains(x: particle.x, y: particle.y) {
                     guard let projection = map.nearestSupport(x: particle.x, y: particle.y),
@@ -2094,6 +2226,9 @@ enum NativePositioningEngine {
                         projection.distance / max(map.supportRadiusM * 0.20, 0.03), 2
                     ))
                 }
+                // Directional profiles are retained in the map, but only the
+                // attitude-aligned aggregate is used until device-orientation
+                // repeatability is independently validated.
                 let mapValue = map.sample(x: particle.x, y: particle.y)
                 let mapVector = map.sampleVector(x: particle.x, y: particle.y)
                 particle.mapNormHistory.append(mapValue)
@@ -2210,7 +2345,14 @@ enum NativePositioningEngine {
                 )
                 lastTurnTrackIndex = track.count - 1
             }
-            if turnSmoothingCooldown > 0, !closedEndpointLocked {
+            if localizationMode == .roomAreaKnownStart {
+                rawPoint = constrainedRoomDeparture(
+                    rawPoint,
+                    previous: track.last!,
+                    heading: step.heading,
+                    stepLength: step.length
+                )
+            } else if turnSmoothingCooldown > 0, !closedEndpointLocked {
                 rawPoint = constrainedTurnDeparture(
                     rawPoint,
                     previous: track.last!,
@@ -2350,6 +2492,31 @@ enum NativePositioningEngine {
                 y: historyWeight * previous.y + (1 - historyWeight) * current.y
             )
         }
+    }
+
+    /// Prevents a room-area PF mode from jumping sideways to a distant but
+    /// magnetically similar cell in one step. Small lateral corrections remain
+    /// available and can accumulate over subsequent steps.
+    static func constrainedRoomDeparture(
+        _ point: XYPoint,
+        previous: XYPoint,
+        heading: Double,
+        stepLength: Double
+    ) -> XYPoint {
+        let dx = point.x - previous.x
+        let dy = point.y - previous.y
+        let ux = cos(heading)
+        let uy = sin(heading)
+        let forward = dx * ux + dy * uy
+        let lateral = -dx * uy + dy * ux
+        let forwardLimit = max(stepLength * 1.8, 0.20)
+        let lateralLimit = max(stepLength * 0.50, 0.07)
+        let correctedForward = min(max(forward, -0.02), forwardLimit)
+        let correctedLateral = min(max(lateral, -lateralLimit), lateralLimit)
+        return XYPoint(
+            x: previous.x + correctedForward * ux - correctedLateral * uy,
+            y: previous.y + correctedForward * uy + correctedLateral * ux
+        )
     }
 
 
@@ -2506,7 +2673,12 @@ enum NativePositioningEngine {
             bins[key, default: ([], 0)].indices.append(index)
             bins[key, default: ([], 0)].mass += particles[index].weight
         }
-        let ranked = bins.keys.sorted { bins[$0]!.mass > bins[$1]!.mass }
+        let orderedKeys = bins.keys.sorted()
+        let ranked = orderedKeys.sorted {
+            let lhsMass = bins[$0]!.mass
+            let rhsMass = bins[$1]!.mass
+            return abs(lhsMass - rhsMass) > 1e-15 ? lhsMass > rhsMass : $0 < $1
+        }
         var seeds: [Int] = []
         for key in ranked where bins[key]!.mass >= 0.01 {
             if seeds.allSatisfy({ abs($0 - key) >= 2 }) { seeds.append(key) }
@@ -2515,7 +2687,8 @@ enum NativePositioningEngine {
         guard seeds.count >= 2 else { return systematicResample(particles, rng: &rng) }
 
         var clusters = Array(repeating: [Int](), count: seeds.count)
-        for (key, bin) in bins {
+        for key in orderedKeys {
+            let bin = bins[key]!
             let cluster = seeds.indices.min { abs(seeds[$0] - key) < abs(seeds[$1] - key) }!
             clusters[cluster].append(contentsOf: bin.indices)
         }
@@ -2529,7 +2702,9 @@ enum NativePositioningEngine {
         var allocations = rawCounts.map { Int(floor($0)) }
         var remainder = particles.count - allocations.reduce(0, +)
         for index in rawCounts.indices.sorted(by: {
-            rawCounts[$0] - floor(rawCounts[$0]) > rawCounts[$1] - floor(rawCounts[$1])
+            let lhs = rawCounts[$0] - floor(rawCounts[$0])
+            let rhs = rawCounts[$1] - floor(rawCounts[$1])
+            return abs(lhs - rhs) > 1e-15 ? lhs > rhs : $0 < $1
         }) where remainder > 0 {
             allocations[index] += 1
             remainder -= 1
@@ -2582,7 +2757,15 @@ enum NativePositioningEngine {
             bins[key, default: ([], 0)].indices.append(index)
             bins[key, default: ([], 0)].mass += particles[index].weight
         }
-        let ranked = bins.keys.sorted { bins[$0]!.mass > bins[$1]!.mass }
+        let orderedKeys = bins.keys.sorted {
+            $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x
+        }
+        let ranked = orderedKeys.sorted {
+            let lhsMass = bins[$0]!.mass
+            let rhsMass = bins[$1]!.mass
+            if abs(lhsMass - rhsMass) > 1e-15 { return lhsMass > rhsMass }
+            return $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x
+        }
         var seeds: [GridKey] = []
         for key in ranked where bins[key]!.mass >= 0.008 {
             if seeds.allSatisfy({ hypot(Double($0.x - key.x), Double($0.y - key.y)) >= 2 }) {
@@ -2593,7 +2776,8 @@ enum NativePositioningEngine {
         guard seeds.count >= 2 else { return systematicResample(particles, rng: &rng) }
 
         var clusters = Array(repeating: [Int](), count: seeds.count)
-        for (key, bin) in bins {
+        for key in orderedKeys {
+            let bin = bins[key]!
             let cluster = seeds.indices.min {
                 hypot(Double(seeds[$0].x - key.x), Double(seeds[$0].y - key.y))
                     < hypot(Double(seeds[$1].x - key.x), Double(seeds[$1].y - key.y))
@@ -2610,7 +2794,9 @@ enum NativePositioningEngine {
         var allocations = rawCounts.map { Int(floor($0)) }
         var remainder = particles.count - allocations.reduce(0, +)
         for index in rawCounts.indices.sorted(by: {
-            rawCounts[$0] - floor(rawCounts[$0]) > rawCounts[$1] - floor(rawCounts[$1])
+            let lhs = rawCounts[$0] - floor(rawCounts[$0])
+            let rhs = rawCounts[$1] - floor(rawCounts[$1])
+            return abs(lhs - rhs) > 1e-15 ? lhs > rhs : $0 < $1
         }) where remainder > 0 {
             allocations[index] += 1
             remainder -= 1

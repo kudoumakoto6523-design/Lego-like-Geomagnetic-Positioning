@@ -106,7 +106,8 @@ final class AppModel: ObservableObject {
     var importedDatasetReady: Bool {
         guard importedDataset != nil,
               !customDatasetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              DatasetValidator.normalizedRouteText(customRouteText) != nil else {
+              DatasetValidator.normalizedRouteText(customRouteText) != nil,
+              DatasetValidator.routeGeometryIssue(customRouteText) == nil else {
             return false
         }
         if !customInitialHeadingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -128,6 +129,10 @@ final class AppModel: ObservableObject {
 
     var routeMapValidation: RouteMapValidation {
         DatasetValidator.validateRoute(customRouteText, against: selectedMapBounds)
+    }
+
+    var routeGeometryIssue: String? {
+        DatasetValidator.routeGeometryIssue(customRouteText)
     }
 
     var selectedMapBounds: CoordinateBounds? {
@@ -159,9 +164,8 @@ final class AppModel: ObservableObject {
     }
 
     var selectedMapUsesCurrentDataset: Bool {
-        guard let map = selectedMagneticMap else { return false }
-        let key = customDatasetName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return map.document.sourceDatasetKeys.contains(key)
+        guard let map = selectedMagneticMap, let importedDataset else { return false }
+        return map.document.sourceDatasetKeys.contains(importedDataset.sourceDatasetKey)
     }
 
     var coordinateFrameMatchesSelectedMap: Bool {
@@ -178,15 +182,13 @@ final class AppModel: ObservableObject {
 
     var canRunSelectedDataset: Bool {
         guard !isBackendRunning else { return false }
-        guard let map = mapForCurrentSelection else { return false }
+        guard mapForCurrentSelection != nil else { return false }
         if runInputMode == .imported {
             return importedDatasetReady
                 && routeMapValidation.isValid
                 && coordinateFrameMatchesSelectedMap
                 && roomModeHasExplicitInitialHeading
-                && !map.document.sourceDatasetKeys.contains(
-                    customDatasetName.trimmingCharacters(in: .whitespacesAndNewlines)
-                )
+                && !selectedMapUsesCurrentDataset
         }
         return true
     }
@@ -209,6 +211,9 @@ final class AppModel: ObservableObject {
         }
         if runInputMode == .imported, !routeMapValidation.isValid {
             return "真实路线超出所选地磁图的覆盖范围；可以改选磁图或用当前采集建立新磁图"
+        }
+        if runInputMode == .imported, routeGeometryIssue != nil {
+            return "真实路线存在重复点或原路折返，请先检查坐标顺序"
         }
         if runInputMode == .imported, !importedDatasetReady {
             return "请先选择有效的采集数据，并填写数据集名称和真实路线"
@@ -479,7 +484,7 @@ final class AppModel: ObservableObject {
             if importedDataset.spatialAnchors.count >= 2 {
                 document = try NativePositioningEngine.buildAnchoredGridMagneticMap(
                     name: mapName,
-                    datasetKey: datasetKey,
+                    datasetKey: importedDataset.sourceDatasetKey,
                     datasetDirectory: importedDataset.directoryURL,
                     coordinateFrame: importedDataset.coordinateFrame ?? "local-room",
                     anchors: importedDataset.spatialAnchors,
@@ -491,7 +496,7 @@ final class AppModel: ObservableObject {
             } else {
                 document = try NativePositioningEngine.buildGenericMagneticMap(
                     name: mapName,
-                    datasetKey: datasetKey,
+                    datasetKey: importedDataset.sourceDatasetKey,
                     datasetDirectory: importedDataset.directoryURL,
                     route: route,
                     initialHeadingDegrees: initialHeading,
@@ -757,7 +762,7 @@ final class AppModel: ObservableObject {
         guard !datasetKey.isEmpty else {
             throw RunPreparationError.emptyDatasetName
         }
-        if selectedMap.document.sourceDatasetKeys.contains(datasetKey) {
+        if selectedMap.document.sourceDatasetKeys.contains(importedDataset.sourceDatasetKey) {
             throw RunPreparationError.mapSourceCannotLocateItself
         }
         if let mapFrame = selectedMap.document.coordinateFrame {
@@ -770,6 +775,9 @@ final class AppModel: ObservableObject {
             }
         }
         guard let normalizedRoute = DatasetValidator.normalizedRouteText(customRouteText) else {
+            throw RunPreparationError.invalidRoute
+        }
+        guard DatasetValidator.routeGeometryIssue(normalizedRoute) == nil else {
             throw RunPreparationError.invalidRoute
         }
         let route = Self.parseRoute(normalizedRoute)

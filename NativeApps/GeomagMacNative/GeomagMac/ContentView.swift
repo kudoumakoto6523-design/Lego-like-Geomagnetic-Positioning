@@ -644,9 +644,19 @@ struct ContentView: View {
                 .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
                 .disabled(model.isBackendRunning)
-                Text("坐标必须与所选地磁地图处于同一坐标系；分号分隔路径拐点。")
+                Text("白色“真实路线”只会按这里的坐标顺序连线，不是传感器自动还原的轨迹；请确认点位顺序与实际行走一致。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+
+                if let issue = model.routeGeometryIssue {
+                    Label(issue, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.red)
+                } else if DatasetValidator.normalizedRouteText(model.customRouteText) != nil {
+                    Label("路线点序检查通过", systemImage: "checkmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
 
                 Text("初始航向（可选，数学角度）")
                     .font(.caption2.weight(.semibold))

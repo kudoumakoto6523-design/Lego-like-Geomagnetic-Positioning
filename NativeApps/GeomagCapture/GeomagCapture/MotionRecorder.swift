@@ -117,6 +117,16 @@ final class MotionRecorder: ObservableObject {
         routeAnchorTotal > 0 && routeAnchorCompleted < routeAnchorTotal
     }
 
+    var nextRouteAnchorIsFinal: Bool {
+        guard let route else { return false }
+        return nextRouteAnchorIndex == route.count - 1
+    }
+
+    var nextRouteAnchorRequiresTurn: Bool {
+        guard let route else { return false }
+        return Self.routeTurns(at: nextRouteAnchorIndex, in: route)
+    }
+
     var sensorAvailabilityText: String {
         let available = [
             manager.isAccelerometerAvailable,
@@ -134,7 +144,8 @@ final class MotionRecorder: ObservableObject {
         coordinateFrameText: String,
         startXText: String,
         startYText: String,
-        reverseRoute: Bool = false
+        reverseRoute: Bool = false,
+        routeTextIsReversed: Bool = false
     ) {
         guard !isRecording else { return }
         guard manager.isAccelerometerAvailable,
@@ -167,6 +178,10 @@ final class MotionRecorder: ObservableObject {
             errorMessage = "路线格式不正确。请使用 x1,y1; x2,y2，例如 1.44,0.55; 1.44,6.05。"
             return
         }
+        if let forwardRoute, let issue = Self.routeIssue(forwardRoute) {
+            errorMessage = issue
+            return
+        }
         let headingText = initialHeadingText.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsedHeading = headingText.isEmpty ? nil : Double(headingText)
         if !headingText.isEmpty, parsedHeading?.isFinite != true {
@@ -174,7 +189,11 @@ final class MotionRecorder: ObservableObject {
             return
         }
         let usesReverseRoute = reverseRoute && forwardRoute != nil
-        let parsedRoute = usesReverseRoute ? forwardRoute.map { Array($0.reversed()) } : forwardRoute
+        let parsedRoute = Self.orderedRoute(
+            forwardRoute,
+            reverseRoute: usesReverseRoute,
+            inputIsReversed: routeTextIsReversed
+        )
         let routeHeading = parsedRoute.flatMap(Self.initialHeading)
         guard let resolvedHeading = (usesReverseRoute ? nil : parsedHeading) ?? routeHeading,
               resolvedHeading.isFinite else {
@@ -368,11 +387,19 @@ final class MotionRecorder: ObservableObject {
 
     func markTurn(label: String) {
         guard isRecording, !isPaused else { return }
+        guard phoneIsFlat else {
+            errorMessage = "手机倾斜超过 15°。请先保持正面朝上，再在转弯前标记。"
+            return
+        }
         refreshDisplay()
+        appendTurn(label: label, time: currentCaptureTime)
+    }
+
+    private func appendTurn(label: String, time: Double) {
         let eventLabel = normalizedEventLabel(label, fallback: "turn-\(spatialEvents.count)")
         spatialEvents.append(
             SpatialEventSample(
-                time: currentCaptureTime,
+                time: time,
                 type: "turn",
                 label: eventLabel,
                 x: nil,
@@ -382,7 +409,7 @@ final class MotionRecorder: ObservableObject {
             )
         )
         spatialEventCount = spatialEvents.count
-        lastSpatialEventMessage = "已标记转角 · \(eventLabel)"
+        lastSpatialEventMessage = "已标记转弯起点 · \(eventLabel)"
         recoveryStore?.updateSpatialEvents(spatialEvents)
     }
 
@@ -413,6 +440,37 @@ final class MotionRecorder: ObservableObject {
         nextRouteAnchorIndex += 1
         routeAnchorCompleted = min(nextRouteAnchorIndex, routeAnchorTotal)
         refreshNextRouteAnchor()
+    }
+
+    func markNextRouteAnchorAndTurn(label: String) {
+        guard isRecording, !isPaused,
+              let route,
+              route.indices.contains(nextRouteAnchorIndex) else { return }
+        guard phoneIsFlat else {
+            errorMessage = "手机倾斜超过 15°。请先保持正面朝上，再确认路线点。"
+            return
+        }
+        let pointIndex = nextRouteAnchorIndex
+        let shouldMarkTurn = Self.routeTurns(at: pointIndex, in: route)
+        let point = route[pointIndex]
+        let fallback = "route-point-\(pointIndex)"
+        refreshDisplay()
+        let time = currentCaptureTime
+        let eventIndex = appendAnchor(
+            label: normalizedEventLabel(label, fallback: fallback),
+            x: point[0],
+            y: point[1],
+            time: time
+        )
+        routeAnchorEventIndices.append(eventIndex)
+        canUndoLastRouteAnchor = true
+        nextRouteAnchorIndex += 1
+        routeAnchorCompleted = min(nextRouteAnchorIndex, routeAnchorTotal)
+        refreshNextRouteAnchor()
+        if shouldMarkTurn {
+            appendTurn(label: "route-turn-\(pointIndex)", time: time)
+            lastSpatialEventMessage = "已同时记录路线锚点和转弯起点 · 现在可以转向"
+        }
     }
 
     func skipNextRouteAnchor() {
@@ -651,12 +709,13 @@ final class MotionRecorder: ObservableObject {
     }
 
     @discardableResult
-    private func appendAnchor(label: String, x: Double, y: Double) -> Int {
+    private func appendAnchor(label: String, x: Double, y: Double, time: Double? = nil) -> Int {
         refreshDisplay()
+        let eventTime = time ?? currentCaptureTime
         let eventLabel = normalizedEventLabel(label, fallback: "anchor-\(spatialEvents.count)")
         spatialEvents.append(
             SpatialEventSample(
-                time: currentCaptureTime,
+                time: eventTime,
                 type: "anchor",
                 label: eventLabel,
                 x: x,
@@ -666,7 +725,7 @@ final class MotionRecorder: ObservableObject {
             )
         )
         spatialEventCount = spatialEvents.count
-        lastAnchorTime = currentCaptureTime
+        lastAnchorTime = eventTime
         anchorReminderNeeded = false
         lastSpatialEventMessage = String(format: "已记录锚点 %@ · (%.2f, %.2f)", eventLabel, x, y)
         recoveryStore?.updateSpatialEvents(spatialEvents)
@@ -697,16 +756,62 @@ final class MotionRecorder: ObservableObject {
         return result
     }
 
-    private static func parseRoute(_ value: String) -> [[Double]]? {
-        let points = value.split(separator: ";").compactMap { pair -> [Double]? in
+    static func parseRoute(_ value: String) -> [[Double]]? {
+        let pairs = value.split(separator: ";", omittingEmptySubsequences: false)
+        var points: [[Double]] = []
+        for pair in pairs {
             let coordinates = pair.split(separator: ",", omittingEmptySubsequences: false)
             guard coordinates.count == 2,
                   let x = Double(coordinates[0].trimmingCharacters(in: .whitespacesAndNewlines)),
                   let y = Double(coordinates[1].trimmingCharacters(in: .whitespacesAndNewlines)),
                   x.isFinite, y.isFinite else { return nil }
-            return [x, y]
+            points.append([x, y])
         }
         return points.count >= 2 ? points : nil
+    }
+
+    static func routeIssue(_ route: [[Double]]) -> String? {
+        guard route.count >= 2 else { return "真实路线至少需要两个坐标点。" }
+        for index in 1..<route.count {
+            let length = hypot(
+                route[index][0] - route[index - 1][0],
+                route[index][1] - route[index - 1][1]
+            )
+            if length < 0.05 {
+                return "路线第 \(index) 与第 \(index + 1) 点距离小于 0.05 m，请删除重复点。"
+            }
+        }
+        guard route.count >= 3 else { return nil }
+        for index in 1..<(route.count - 1) {
+            let ax = route[index][0] - route[index - 1][0]
+            let ay = route[index][1] - route[index - 1][1]
+            let bx = route[index + 1][0] - route[index][0]
+            let by = route[index + 1][1] - route[index][1]
+            let cosine = (ax * bx + ay * by) / (hypot(ax, ay) * hypot(bx, by))
+            if cosine < -0.97 {
+                return "路线第 \(index + 1) 点形成近 180° 原路折返，请检查坐标顺序；确需折返时建议拆成两次采集。"
+            }
+        }
+        return nil
+    }
+
+    private static func routeTurns(at index: Int, in route: [[Double]]) -> Bool {
+        guard index > 0, index < route.count - 1 else { return false }
+        let ax = route[index][0] - route[index - 1][0]
+        let ay = route[index][1] - route[index - 1][1]
+        let bx = route[index + 1][0] - route[index][0]
+        let by = route[index + 1][1] - route[index][1]
+        let cosine = max(-1, min(1, (ax * bx + ay * by) / (hypot(ax, ay) * hypot(bx, by))))
+        return acos(cosine) * 180 / .pi >= 15
+    }
+
+    static func orderedRoute(
+        _ route: [[Double]]?,
+        reverseRoute: Bool,
+        inputIsReversed: Bool
+    ) -> [[Double]]? {
+        guard let route else { return nil }
+        return inputIsReversed == reverseRoute ? route : Array(route.reversed())
     }
 
     private static func initialHeading(of route: [[Double]]) -> Double? {

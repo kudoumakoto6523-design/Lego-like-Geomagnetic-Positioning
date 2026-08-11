@@ -178,12 +178,15 @@ export class CapturePackageExporter {
       throw new Error('没有选择导出位置');
     }
     let source = fs.openSync(result.archivePath, fs.OpenMode.READ_ONLY);
-    let destination = fs.openSync(destinations[0], fs.OpenMode.READ_WRITE);
     try {
-      await fs.copyFile(source.fd, destination.fd);
+      let destination = fs.openSync(destinations[0], fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        await fs.copyFile(source.fd, destination.fd);
+      } finally {
+        fs.closeSync(destination);
+      }
     } finally {
       fs.closeSync(source);
-      fs.closeSync(destination);
     }
     return destinations[0];
   }

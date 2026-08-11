@@ -82,7 +82,9 @@ export class MotionRecorder {
     this.isRecording = true;
     this.isPaused = false;
     this.statusMessage = '正在采集 · 请保持手机正面朝上、前端朝前';
-    this.subscribeSensors();
+    if (!this.subscribeSensors()) {
+      return;
+    }
     this.timerId = setInterval(() => {
       this.elapsedSeconds = this.currentTime();
     }, 200);
@@ -134,6 +136,37 @@ export class MotionRecorder {
     return true;
   }
 
+  recordNextRoutePointAndTurn(): boolean {
+    if (!this.isRecording || this.isPaused || this.nextRouteIndex >= this.config.route.length) {
+      return false;
+    }
+    if (!this.phoneIsFlat()) {
+      this.statusMessage = '手机倾斜超过 15° · 请先保持正面朝上再确认点位';
+      return false;
+    }
+    let pointIndex = this.nextRouteIndex;
+    let point = this.config.route[pointIndex];
+    let shouldMarkTurn = this.routeTurnsAt(pointIndex);
+    let time = this.currentTime();
+    this.spatialEvents.push(new SpatialEvent(time, 'anchor', `route-point-${pointIndex}`,
+      point.x, point.y, this.currentHeading(), this.hasInitialDeviceYaw ? this.yawDegrees : undefined));
+    this.nextRouteIndex += 1;
+    if (shouldMarkTurn) {
+      this.spatialEvents.push(new SpatialEvent(time, 'turn', `route-turn-${pointIndex}`, undefined, undefined,
+        this.currentHeading(), this.hasInitialDeviceYaw ? this.yawDegrees : undefined));
+      this.statusMessage = '已同时记录路线锚点和转弯起点 · 现在可以转向';
+    } else if (this.nextRouteIndex < this.config.route.length) {
+      this.statusMessage = '路线锚点已记录 · 保持方向继续行走';
+    } else {
+      this.statusMessage = '终点锚点已记录 · 全部路线点已完成';
+    }
+    return true;
+  }
+
+  nextRoutePointRequiresTurn(): boolean {
+    return this.routeTurnsAt(this.nextRouteIndex);
+  }
+
   skipNextRoutePoint(): boolean {
     if (!this.isRecording || !this.isPaused || this.nextRouteIndex >= this.config.route.length) {
       return false;
@@ -149,7 +182,7 @@ export class MotionRecorder {
   }
 
   recordManualAnchor(x: number, y: number, label: string = 'manual-anchor'): void {
-    if (!this.isRecording) {
+    if (!this.isRecording || this.isPaused) {
       return;
     }
     this.spatialEvents.push(new SpatialEvent(this.currentTime(), 'anchor', label, x, y,
@@ -159,6 +192,10 @@ export class MotionRecorder {
 
   recordTurn(label: string = 'turn'): void {
     if (!this.isRecording || this.isPaused) {
+      return;
+    }
+    if (!this.phoneIsFlat()) {
+      this.statusMessage = '手机倾斜超过 15° · 请保持正面朝上再标记转弯';
       return;
     }
     this.spatialEvents.push(new SpatialEvent(this.currentTime(), 'turn', label, undefined, undefined,
@@ -175,6 +212,9 @@ export class MotionRecorder {
       if (event.label.startsWith('route-point-')) {
         this.spatialEvents.splice(index, 1);
         this.nextRouteIndex = Math.max(1, this.nextRouteIndex - 1);
+        if (event.type === 'anchor_skipped') {
+          this.skippedRoutePoints = Math.max(0, this.skippedRoutePoints - 1);
+        }
         this.statusMessage = '已撤销上一个路线点';
         return true;
       }
@@ -194,7 +234,14 @@ export class MotionRecorder {
       return '自由采集';
     }
     let index = Math.min(this.nextRouteIndex, this.config.route.length - 1);
-    return this.config.route[index].phase === 'vertical' ? '纵向交叉' : '横向蛇形';
+    let phase = this.config.route[index].phase;
+    if (phase === 'long_cross') {
+      return '横穿长边补扫';
+    }
+    if (phase === 'free') {
+      return '自由规划路线';
+    }
+    return phase === 'vertical' ? '纵向交叉' : '横向蛇形';
   }
 
   nextRoutePointText(): string {
@@ -209,13 +256,29 @@ export class MotionRecorder {
     return Math.abs(this.rollDegrees) <= 15 && Math.abs(this.pitchDegrees) <= 15;
   }
 
+  private routeTurnsAt(index: number): boolean {
+    if (index <= 0 || index >= this.config.route.length - 1) {
+      return false;
+    }
+    let previous = this.config.route[index - 1];
+    let point = this.config.route[index];
+    let next = this.config.route[index + 1];
+    let ax = point.x - previous.x;
+    let ay = point.y - previous.y;
+    let bx = next.x - point.x;
+    let by = next.y - point.y;
+    let cosine = Math.max(-1, Math.min(1, (ax * bx + ay * by) /
+      (Math.sqrt(ax * ax + ay * ay) * Math.sqrt(bx * bx + by * by))));
+    return Math.acos(cosine) * 180 / Math.PI >= 15;
+  }
+
   snapshot(): CaptureSnapshot {
     return new CaptureSnapshot(this.config, this.startedAt, this.stoppedAt, this.accelerometer.slice(),
       this.gyroscope.slice(), this.magnetometer.slice(), this.magnetometerRaw.slice(),
       this.deviceMotion.slice(), this.spatialEvents.slice());
   }
 
-  private subscribeSensors(): void {
+  private subscribeSensors(): boolean {
     let options: sensor.Options = { interval: 10000000 };
     try {
       sensor.on(sensor.SensorId.ACCELEROMETER, (data: sensor.AccelerometerResponse) => {
@@ -250,7 +313,7 @@ export class MotionRecorder {
       this.statusMessage = `必需传感器启动失败：${String(error)}`;
       this.isRecording = false;
       this.unsubscribeSensors();
-      return;
+      return false;
     }
 
     try {
@@ -306,6 +369,7 @@ export class MotionRecorder {
     } catch (error) {
       // Some devices expose only the calibrated magnetic field. The required stream is still available.
     }
+    return true;
   }
 
   private unsubscribeSensors(): void {

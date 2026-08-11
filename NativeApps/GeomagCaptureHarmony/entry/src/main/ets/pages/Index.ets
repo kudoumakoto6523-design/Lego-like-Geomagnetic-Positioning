@@ -13,16 +13,18 @@ struct Index {
   private exportResult?: ExportResult;
 
   @State roomMappingMode: boolean = true;
-  @State crossScanMode: boolean = false;
+  @State scanRouteMode: string = 'single';
   @State reverseRouteMode: boolean = false;
   @State datasetName: string = 'room_map_1';
   @State coordinateFrame: string = 'room-1';
   @State roomWidth: string = '6.0';
-  @State roomHeight: string = '8.0';
+  @State roomLength: string = '8.0';
   @State lineSpacing: string = '0.5';
+  @State supplementSpacing: string = '1.0';
   @State startX: string = '0.0';
   @State startY: string = '0.0';
   @State initialHeading: string = '0.0';
+  @State freeRouteText: string = '';
   @State manualAnchorX: string = '0.0';
   @State manualAnchorY: string = '0.0';
 
@@ -46,35 +48,69 @@ struct Index {
       clearInterval(this.refreshTimer);
       this.refreshTimer = -1;
     }
+    if (this.recorder.isRecording) {
+      this.lastSnapshot = this.recorder.stop('page-disappear');
+      this.buildPackage();
+    }
+  }
+
+  private requiredNumber(value: string): number {
+    let trimmed = value.trim();
+    return trimmed.length === 0 ? Number.NaN : Number(trimmed);
   }
 
   private startCapture(): void {
     this.errorMessage = '';
-    let width = Number(this.roomWidth);
-    let height = Number(this.roomHeight);
-    let spacing = Number(this.lineSpacing);
-    let x = Number(this.startX);
-    let y = Number(this.startY);
-    let requestedHeading = Number(this.initialHeading);
+    let width = this.requiredNumber(this.roomWidth);
+    let length = this.requiredNumber(this.roomLength);
+    let spacing = this.requiredNumber(this.scanRouteMode === 'long_cross'
+      ? this.supplementSpacing : this.lineSpacing);
+    let x = this.requiredNumber(this.startX);
+    let y = this.requiredNumber(this.startY);
+    let requestedHeading = this.requiredNumber(this.initialHeading);
     if (this.datasetName.trim().length === 0 || this.coordinateFrame.trim().length === 0) {
       this.errorMessage = '请填写数据集名称和房间坐标系名称。';
       return;
     }
-    if (!Number.isFinite(x) || !Number.isFinite(y) ||
-      (!this.roomMappingMode && !Number.isFinite(requestedHeading))) {
-      this.errorMessage = '起点坐标和初始航向必须是有效数字。';
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      this.errorMessage = '起点坐标必须是有效数字。';
       return;
     }
-    if (this.roomMappingMode && (!Number.isFinite(width) || !Number.isFinite(height) ||
-      !Number.isFinite(spacing) || width <= 0 || height <= 0 || spacing < 0.2 || spacing > 1.0)) {
-      this.errorMessage = '可扫描宽高必须大于 0，线距应为 0.2～1.0 m。';
+    let minimumSpacing = this.scanRouteMode === 'long_cross' ? 0.5 : 0.2;
+    let maximumSpacing = this.scanRouteMode === 'long_cross' ? 2.0 : 1.0;
+    if (this.roomMappingMode && (!Number.isFinite(width) || !Number.isFinite(length) ||
+      !Number.isFinite(spacing) || width <= 0 || length <= 0 ||
+      spacing < minimumSpacing || spacing > maximumSpacing)) {
+      this.errorMessage = this.scanRouteMode === 'long_cross'
+        ? '可扫描区域的长、宽必须大于 0，横穿间距应为 0.5～2.0 m。'
+        : '可扫描区域的长、宽必须大于 0，线距应为 0.2～1.0 m。';
       return;
     }
 
-    let route = this.roomMappingMode ? this.plannedRoute() : [];
+    let route = this.plannedRoute();
+    if (!this.roomMappingMode && this.freeRouteText.trim().length > 0 && route.length === 0) {
+      this.errorMessage = '真实路线格式错误。请使用 x,y; x,y，并至少填写两个点。';
+      return;
+    }
+    let routeIssue = route.length > 0 ? RoutePlanner.routeIssue(route) : '';
+    if (routeIssue.length > 0) {
+      this.errorMessage = routeIssue;
+      return;
+    }
+    if (route.length === 0 && !Number.isFinite(requestedHeading)) {
+      this.errorMessage = '未填写真实路线时，初始航向必须是有效数字。';
+      return;
+    }
+    if (!this.roomMappingMode && route.length > 0 && !this.reverseRouteMode) {
+      let distance = Math.sqrt((route[0].x - x) * (route[0].x - x) + (route[0].y - y) * (route[0].y - y));
+      if (distance > 0.25) {
+        this.errorMessage = '真实路线第一个坐标必须与起点一致（允许 0.25 m 误差）。';
+        return;
+      }
+    }
     let effectiveStartX = route.length > 0 ? route[0].x : x;
     let effectiveStartY = route.length > 0 ? route[0].y : y;
-    let effectiveHeading = this.roomMappingMode
+    let effectiveHeading = route.length > 0
       ? RoutePlanner.initialHeadingDegrees(route, 0) : requestedHeading;
     let config = new CaptureConfig();
     config.datasetKey = this.datasetName.trim();
@@ -82,10 +118,16 @@ struct Index {
     config.startX = effectiveStartX;
     config.startY = effectiveStartY;
     config.initialHeadingDegrees = effectiveHeading;
-    config.routeDirection = this.roomMappingMode && this.reverseRouteMode ? 'reverse' : 'forward';
+    config.routeDirection = this.reverseRouteMode && route.length > 0 ? 'reverse' : 'forward';
     config.sampleRateHz = 100;
     config.route = route;
     this.recorder.start(config);
+    if (!this.recorder.isRecording) {
+      this.errorMessage = this.recorder.statusMessage;
+      this.packageStatus = '传感器启动失败，未开始采集';
+      this.refreshViewState();
+      return;
+    }
     this.exportResult = undefined;
     this.hasExportPackage = false;
     this.lastSnapshot = undefined;
@@ -98,7 +140,7 @@ struct Index {
     if (!this.isRecording) {
       return;
     }
-    if (this.roomMappingMode && this.recorder.nextRouteIndex < this.currentRoutePointCount()) {
+    if (this.recorder.nextRouteIndex < this.currentRoutePointCount()) {
       AlertDialog.show({
         title: '路线尚未完成',
         message: '仍有扫描点未确认。可以继续采集，也可以保留当前数据并停止。',
@@ -197,19 +239,26 @@ struct Index {
   }
 
   private plannedRoute(): RoutePoint[] {
-    let width = Number(this.roomWidth);
-    let height = Number(this.roomHeight);
-    let spacing = Number(this.lineSpacing);
-    if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(spacing) ||
-      width <= 0 || height <= 0) {
+    if (!this.roomMappingMode) {
+      let freeRoute = RoutePlanner.parse(this.freeRouteText);
+      return this.reverseRouteMode ? RoutePlanner.reversed(freeRoute) : freeRoute;
+    }
+    let width = this.requiredNumber(this.roomWidth);
+    let length = this.requiredNumber(this.roomLength);
+    let spacing = this.requiredNumber(this.scanRouteMode === 'long_cross'
+      ? this.supplementSpacing : this.lineSpacing);
+    if (!Number.isFinite(width) || !Number.isFinite(length) || !Number.isFinite(spacing) ||
+      width <= 0 || length <= 0) {
       return [];
     }
-    let originX = Number(this.startX);
-    let originY = Number(this.startY);
+    let originX = this.requiredNumber(this.startX);
+    let originY = this.requiredNumber(this.startY);
     if (!Number.isFinite(originX) || !Number.isFinite(originY)) {
       return [];
     }
-    let route = RoutePlanner.serpentine(width, height, spacing, originX, originY, this.crossScanMode);
+    let route = this.scanRouteMode === 'long_cross'
+      ? RoutePlanner.longSideCrossing(width, length, spacing, originX, originY)
+      : RoutePlanner.serpentine(width, length, spacing, originX, originY, this.scanRouteMode === 'cross');
     return this.reverseRouteMode ? RoutePlanner.reversed(route) : route;
   }
 
@@ -223,6 +272,18 @@ struct Index {
     let heading = RoutePlanner.initialHeadingDegrees(route, 0);
     return `实际起点 (${first.x.toFixed(2)}, ${first.y.toFixed(2)}) · ` +
       `终点 (${last.x.toFixed(2)}, ${last.y.toFixed(2)}) · 初始航向 ${heading.toFixed(0)}°`;
+  }
+
+  private freeRouteStatus(): string {
+    if (this.freeRouteText.trim().length === 0) {
+      return '可选；填写后会逐点引导，并用于 macOS 显示真实路线。';
+    }
+    let route = this.plannedRoute();
+    if (route.length === 0) {
+      return '格式错误：请使用 x,y; x,y。';
+    }
+    let issue = RoutePlanner.routeIssue(route);
+    return issue.length > 0 ? issue : this.plannedRouteSummary();
   }
 
   private plannedInitialHeadingText(): string {
@@ -241,8 +302,8 @@ struct Index {
   }
 
   private recordManualAnchor(): void {
-    let x = Number(this.manualAnchorX);
-    let y = Number(this.manualAnchorY);
+    let x = this.requiredNumber(this.manualAnchorX);
+    let y = this.requiredNumber(this.manualAnchorY);
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       this.errorMessage = '手动锚点坐标必须是有效数字。';
       return;
@@ -305,32 +366,42 @@ struct Index {
             Column() { this.labeledInput(this.roomMappingMode ? '扫描区域左下角 Y' : '起点 Y', this.startY,
               (value: string) => { this.startY = value; }, InputType.Normal) }.layoutWeight(1)
           }.width('100%')
-          this.labeledInput(this.roomMappingMode ? '初始航向（由路线自动计算）' : '初始航向（数学角度）',
-            this.roomMappingMode ? this.plannedInitialHeadingText() : this.initialHeading,
-            (value: string) => { this.initialHeading = value; }, InputType.Normal, !this.roomMappingMode)
+          this.labeledInput(this.plannedRoute().length > 0 ? '初始航向（由路线自动计算）' : '初始航向（数学角度）',
+            this.plannedRoute().length > 0 ? this.plannedInitialHeadingText() : this.initialHeading,
+            (value: string) => { this.initialHeading = value; }, InputType.Normal, this.plannedRoute().length === 0)
         }.padding(16).backgroundColor(Color.White).borderRadius(16).width('100%')
 
         if (this.roomMappingMode) {
           Column({ space: 12 }) {
             this.sectionTitle('蛇形建图任务', '起点为可扫描区域左下角；建议线距 0.4～0.6 m')
             Row({ space: 10 }) {
-              Column() { this.labeledInput('可扫描宽度', this.roomWidth, (value: string) => { this.roomWidth = value; }, InputType.Normal) }.layoutWeight(1)
-              Column() { this.labeledInput('可扫描高度', this.roomHeight, (value: string) => { this.roomHeight = value; }, InputType.Normal) }.layoutWeight(1)
+              Column() { this.labeledInput('可扫描宽度 X', this.roomWidth, (value: string) => { this.roomWidth = value; }, InputType.Normal) }.layoutWeight(1)
+              Column() { this.labeledInput('可扫描长度 Y', this.roomLength, (value: string) => { this.roomLength = value; }, InputType.Normal) }.layoutWeight(1)
             }.width('100%')
-            this.labeledInput('扫描线距（0.2～1.0 m）', this.lineSpacing,
-              (value: string) => { this.lineSpacing = value; }, InputType.Normal)
+            if (this.scanRouteMode === 'long_cross') {
+              this.labeledInput('横穿间距（0.5～2.0 m）', this.supplementSpacing,
+                (value: string) => { this.supplementSpacing = value; }, InputType.Normal)
+            } else {
+              this.labeledInput('扫描线距（0.2～1.0 m）', this.lineSpacing,
+                (value: string) => { this.lineSpacing = value; }, InputType.Normal)
+            }
             Row({ space: 8 }) {
-              Button('单向蛇形')
+              Button('基础蛇形')
                 .layoutWeight(1)
-                .backgroundColor(!this.crossScanMode ? '#1677FF' : '#EAECF0')
-                .fontColor(!this.crossScanMode ? Color.White : '#344054')
-                .onClick(() => { if (!this.isRecording) this.crossScanMode = false; })
+                .backgroundColor(this.scanRouteMode === 'single' ? '#1677FF' : '#EAECF0')
+                .fontColor(this.scanRouteMode === 'single' ? Color.White : '#344054')
+                .onClick(() => { if (!this.isRecording) this.scanRouteMode = 'single'; })
               Button('双向交叉')
                 .layoutWeight(1)
-                .backgroundColor(this.crossScanMode ? '#1677FF' : '#EAECF0')
-                .fontColor(this.crossScanMode ? Color.White : '#344054')
-                .onClick(() => { if (!this.isRecording) this.crossScanMode = true; })
+                .backgroundColor(this.scanRouteMode === 'cross' ? '#1677FF' : '#EAECF0')
+                .fontColor(this.scanRouteMode === 'cross' ? Color.White : '#344054')
+                .onClick(() => { if (!this.isRecording) this.scanRouteMode = 'cross'; })
             }.width('100%')
+            Button('横穿长边补扫')
+              .width('100%')
+              .backgroundColor(this.scanRouteMode === 'long_cross' ? '#7F56D9' : '#EAECF0')
+              .fontColor(this.scanRouteMode === 'long_cross' ? Color.White : '#344054')
+              .onClick(() => { if (!this.isRecording) this.scanRouteMode = 'long_cross'; })
             Row({ space: 8 }) {
               Button('正向路线')
                 .layoutWeight(1)
@@ -344,11 +415,36 @@ struct Index {
                 .onClick(() => { if (!this.isRecording) this.reverseRouteMode = true; })
             }.width('100%')
             Text(this.plannedRouteSummary()).fontSize(12).fontColor('#027A48')
-            Text(`${this.crossScanMode ? '横向完成后从最近端点继续纵向扫描，精度更高。' :
-              '仅进行一次横向蛇形扫描，点位较少。'} 预计 ${this.plannedRoutePointCount()} 个点位。`)
+            Text(`${this.scanRouteMode === 'cross' ? '横向完成后从最近端点继续纵向扫描，精度更高。' :
+              this.scanRouteMode === 'long_cross' ? '自动判断长边方向，以垂直于长边的路线补充横向磁场约束。' :
+                '进行基础横向蛇形扫描，点位较少。'} 预计 ${this.plannedRoutePointCount()} 个点位。`)
               .fontSize(12).fontColor('#667085')
             Button('查看障碍物处理流程').width('100%').backgroundColor('#FFF4E5').fontColor('#B54708')
               .onClick(() => { this.showObstacleGuide(); })
+          }.padding(16).backgroundColor(Color.White).borderRadius(16).width('100%')
+        } else {
+          Column({ space: 12 }) {
+            this.sectionTitle('自由采集真实路线', '可选；按实际行走顺序填写拐点坐标，单位为米')
+            this.labeledInput('真实路线坐标', this.freeRouteText,
+              (value: string) => { this.freeRouteText = value; }, InputType.Normal)
+            Text('格式：0,0; 0.6,1.2; 1.2,0。不要把房间边界尺寸当作实际行走坐标。')
+              .fontSize(12).fontColor('#667085')
+            Row({ space: 8 }) {
+              Button('正向路线')
+                .layoutWeight(1)
+                .backgroundColor(!this.reverseRouteMode ? '#12B76A' : '#EAECF0')
+                .fontColor(!this.reverseRouteMode ? Color.White : '#344054')
+                .onClick(() => { if (!this.isRecording) this.reverseRouteMode = false; })
+              Button('反向路线')
+                .layoutWeight(1)
+                .backgroundColor(this.reverseRouteMode ? '#12B76A' : '#EAECF0')
+                .fontColor(this.reverseRouteMode ? Color.White : '#344054')
+                .onClick(() => { if (!this.isRecording) this.reverseRouteMode = true; })
+            }.width('100%')
+            Text(this.freeRouteStatus()).fontSize(12)
+              .fontColor(this.freeRouteText.trim().length > 0 &&
+                (this.plannedRoute().length === 0 || RoutePlanner.routeIssue(this.plannedRoute()).length > 0)
+                ? '#B42318' : '#027A48')
           }.padding(16).backgroundColor(Color.White).borderRadius(16).width('100%')
         }
 
@@ -364,7 +460,11 @@ struct Index {
           }.width('100%')
           Text(this.sensorCountText).fontSize(13).fontColor('#475467')
           Text(this.attitudeText).fontSize(13).fontColor(this.recorder.phoneIsFlat() ? '#027A48' : '#B54708')
-          if (this.roomMappingMode && this.isRecording) {
+          if (!this.recorder.phoneIsFlat() && this.isRecording) {
+            Text('手机倾斜超过 15°：保持正面朝上后再确认点位或标记转弯。')
+              .fontSize(13).fontColor('#B54708')
+          }
+          if (this.currentRoutePointCount() > 0 && this.isRecording) {
             Text(`${this.routePhase} · 路线进度 ${this.routeProgress} · ${this.nextRoutePoint}`)
               .fontSize(14).fontColor('#344054')
           }
@@ -384,10 +484,13 @@ struct Index {
               Button('转弯前标记').layoutWeight(1).backgroundColor('#7F56D9').enabled(!this.isPaused)
                 .onClick(() => { this.recorder.recordTurn(); this.refreshViewState(); })
             }.width('100%')
-            if (this.roomMappingMode) {
+            if (this.currentRoutePointCount() > 0) {
               Row({ space: 10 }) {
-                Button('到达下一点').layoutWeight(1).backgroundColor('#1677FF').enabled(!this.isPaused)
-                  .onClick(() => { this.recorder.recordNextRoutePoint(); this.refreshViewState(); })
+                Button(this.recorder.nextRouteIndex >= this.currentRoutePointCount() - 1
+                  ? '到达终点' : (this.recorder.nextRoutePointRequiresTurn()
+                    ? '到达点位并准备转弯' : '到达路线点')).layoutWeight(1).backgroundColor('#1677FF')
+                  .enabled(!this.isPaused && this.recorder.phoneIsFlat())
+                  .onClick(() => { this.recorder.recordNextRoutePointAndTurn(); this.refreshViewState(); })
                 Button('障碍物：跳过此点').layoutWeight(1).backgroundColor('#D92D20').enabled(this.isPaused)
                   .onClick(() => { this.recorder.skipNextRoutePoint(); this.refreshViewState(); })
               }.width('100%')
@@ -406,7 +509,8 @@ struct Index {
                 .backgroundColor('#F2F4F7').onChange((value: string) => { this.manualAnchorX = value; })
               TextInput({ text: this.manualAnchorY, placeholder: 'Y' }).type(InputType.Normal).layoutWeight(1)
                 .backgroundColor('#F2F4F7').onChange((value: string) => { this.manualAnchorY = value; })
-              Button('记录').backgroundColor('#12B76A').onClick(() => { this.recordManualAnchor(); })
+              Button('记录').backgroundColor('#12B76A').enabled(!this.isPaused)
+                .onClick(() => { this.recordManualAnchor(); })
             }.width('100%')
           }.padding(16).backgroundColor(Color.White).borderRadius(16).width('100%')
         }
@@ -430,7 +534,7 @@ struct Index {
 
         Column({ space: 6 }) {
           Text('采集提示').fontSize(16).fontWeight(FontWeight.Bold)
-          Text('手机正面朝上、前端朝前；匀速沿扫描线行走。到达点位后先点“到达下一点”，再点“转弯前标记”，然后转向。遇障碍物先记录锚点并暂停。')
+          Text('手机正面朝上、前端朝前。预设路线时，到达点位后点“到达点位并准备转弯”，应用会同时记录锚点和转弯起点，然后再转向；无预设路线时才单独标记转弯。')
             .fontSize(13).fontColor('#475467').lineHeight(20)
         }.alignItems(HorizontalAlign.Start).padding(16).backgroundColor('#EEF4FF').borderRadius(16).width('100%')
       }

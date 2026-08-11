@@ -168,6 +168,12 @@ struct ImportedDataset: Hashable {
 
     var overlapDuration: Double { max(overlapEnd - overlapStart, 0) }
 
+    var sourceDatasetKey: String {
+        let metadataKey = suggestedDatasetName?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return metadataKey.isEmpty ? directoryURL.lastPathComponent : metadataKey
+    }
+
     var estimatedFrameCount: Int {
         streams.first(where: { $0.kind == .accelerometer })?.validRowCount ?? 0
     }
@@ -375,6 +381,28 @@ enum DatasetValidator {
         }
         guard points.count >= 2 else { return nil }
         return points.map { "\(number($0.0)),\(number($0.1))" }.joined(separator: "; ")
+    }
+
+    static func routeGeometryIssue(_ text: String) -> String? {
+        guard normalizedRouteText(text) != nil else { return nil }
+        let points = routePoints(text)
+        for index in 1..<points.count {
+            if hypot(points[index].0 - points[index - 1].0, points[index].1 - points[index - 1].1) < 0.05 {
+                return "路线第 \(index) 与第 \(index + 1) 点距离小于 0.05 m，请删除重复点。"
+            }
+        }
+        guard points.count >= 3 else { return nil }
+        for index in 1..<(points.count - 1) {
+            let ax = points[index].0 - points[index - 1].0
+            let ay = points[index].1 - points[index - 1].1
+            let bx = points[index + 1].0 - points[index].0
+            let by = points[index + 1].1 - points[index].1
+            let cosine = (ax * bx + ay * by) / (hypot(ax, ay) * hypot(bx, by))
+            if cosine < -0.97 {
+                return "路线第 \(index + 1) 点形成近 180° 原路折返，请检查坐标顺序。"
+            }
+        }
+        return nil
     }
 
     static func validateRoute(
@@ -882,7 +910,7 @@ enum DatasetValidator {
         }.sorted { $0.time < $1.time }
     }
 
-    private static func readMappingPauseIntervals(_ url: URL) -> [ClosedRange<Double>] {
+    static func readMappingPauseIntervals(_ url: URL) -> [ClosedRange<Double>] {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         let lines = text.split(whereSeparator: \.isNewline)
         guard let header = lines.first else { return [] }
@@ -900,8 +928,14 @@ enum DatasetValidator {
             case "resume":
                 if let start = pauseStart, time >= start { intervals.append(start...time) }
                 pauseStart = nil
+            case "recording_stop":
+                if let start = pauseStart, time >= start { intervals.append(start...time) }
+                pauseStart = nil
             default: break
             }
+        }
+        if let start = pauseStart {
+            intervals.append(start...Double.greatestFiniteMagnitude)
         }
         return intervals
     }

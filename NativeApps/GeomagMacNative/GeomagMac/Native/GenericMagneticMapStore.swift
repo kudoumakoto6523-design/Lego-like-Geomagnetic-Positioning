@@ -23,6 +23,15 @@ enum LocalizationMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+struct MagneticDirectionalProfile: Codable, Hashable, Sendable {
+    let directionBin: Int
+    let magneticNormUT: Double
+    let magneticXUT: Double?
+    let magneticYUT: Double?
+    let magneticZUT: Double?
+    let observationCount: Int
+}
+
 struct GenericMagneticMapSample: Codable, Hashable, Sendable {
     let x: Double
     let y: Double
@@ -34,6 +43,7 @@ struct GenericMagneticMapSample: Codable, Hashable, Sendable {
     var observationCount: Int? = nil
     var directionCount: Int? = nil
     var headingRadians: Double? = nil
+    var directionalProfiles: [MagneticDirectionalProfile]? = nil
     var gradientXUTPerM: Double? = nil
     var gradientYUTPerM: Double? = nil
 }
@@ -346,6 +356,7 @@ enum GenericMagneticMapStore {
         let rhs = try addition.validated()
         guard lhs.id == rhs.id,
               lhs.coordinateFrame == rhs.coordinateFrame,
+              lhs.localizationMode == rhs.localizationMode,
               abs((lhs.gridCellSizeM ?? 0.4) - (rhs.gridCellSizeM ?? 0.4)) < 1e-6 else {
             throw StoreError.incompatibleMaps
         }
@@ -354,40 +365,86 @@ enum GenericMagneticMapStore {
         }
         let cell = lhs.gridCellSizeM ?? rhs.gridCellSizeM ?? 0.4
         struct Key: Hashable { let x: Int; let y: Int }
-        var grouped: [Key: [GenericMagneticMapSample]] = [:]
-        for sample in lhs.samples + rhs.samples {
-            grouped[Key(x: Int(floor(sample.x / cell)), y: Int(floor(sample.y / cell))), default: []]
-                .append(sample)
+        struct WeightedSample {
+            let sample: GenericMagneticMapSample
+            let sourceWeight: Double
         }
-        var mergedSamples: [GenericMagneticMapSample] = []
-        for values in grouped.values {
-            func median(_ numbers: [Double]) -> Double {
-                let sorted = numbers.sorted()
-                let middle = sorted.count / 2
-                return sorted.count.isMultiple(of: 2)
-                    ? (sorted[middle - 1] + sorted[middle]) / 2
-                    : sorted[middle]
+        var grouped: [Key: [WeightedSample]] = [:]
+        func append(_ document: GenericMagneticMapDocument) {
+            let sourceWeight = Double(max(document.sourceDatasetKeys.count, 1))
+            for sample in document.samples {
+                let key = Key(x: Int(floor(sample.x / cell)), y: Int(floor(sample.y / cell)))
+                grouped[key, default: []].append(WeightedSample(
+                    sample: sample,
+                    sourceWeight: sourceWeight
+                ))
             }
-            func optionalMedian(_ values: [Double?]) -> Double? {
-                let numbers = values.compactMap { $0 }
-                return numbers.isEmpty ? nil : median(numbers)
+        }
+        append(lhs)
+        append(rhs)
+
+        func weightedMean(_ values: [(value: Double, weight: Double)]) -> Double {
+            let totalWeight = values.map(\.weight).reduce(0, +)
+            guard totalWeight > 0 else { return values.first?.value ?? 0 }
+            return values.map { $0.value * $0.weight }.reduce(0, +) / totalWeight
+        }
+        func optionalWeightedMean(
+            _ values: [WeightedSample],
+            _ value: (GenericMagneticMapSample) -> Double?
+        ) -> Double? {
+            let available = values.compactMap { item -> (value: Double, weight: Double)? in
+                value(item.sample).map { ($0, item.sourceWeight) }
             }
-            let x = median(values.map(\.x))
-            let y = median(values.map(\.y))
-            let norm = median(values.map(\.magneticNormUT))
-            let bx = optionalMedian(values.map(\.magneticXUT))
-            let by = optionalMedian(values.map(\.magneticYUT))
-            let bz = optionalMedian(values.map(\.magneticZUT))
-            let variance = optionalMedian(values.map(\.varianceUT2))
-            let observations = values.compactMap(\.observationCount).reduce(0, +)
-            let directions = min(values.compactMap(\.directionCount).reduce(0, +), 8)
-            let headings = values.compactMap(\.headingRadians)
+            return available.isEmpty ? nil : weightedMean(available)
+        }
+
+        var mergedByKey: [Key: GenericMagneticMapSample] = [:]
+        for (key, values) in grouped {
+            let x = weightedMean(values.map { ($0.sample.x, $0.sourceWeight) })
+            let y = weightedMean(values.map { ($0.sample.y, $0.sourceWeight) })
+            let norm = weightedMean(values.map { ($0.sample.magneticNormUT, $0.sourceWeight) })
+            let bx = optionalWeightedMean(values, { $0.magneticXUT })
+            let by = optionalWeightedMean(values, { $0.magneticYUT })
+            let bz = optionalWeightedMean(values, { $0.magneticZUT })
+            let varianceValues = values.compactMap { item -> (value: Double, weight: Double)? in
+                guard let sourceVariance = item.sample.varianceUT2 else { return nil }
+                let disagreement = item.sample.magneticNormUT - norm
+                return (sourceVariance + disagreement * disagreement, item.sourceWeight)
+            }
+            let variance = varianceValues.isEmpty ? nil : weightedMean(varianceValues)
+            let observations = values.compactMap(\.sample.observationCount).reduce(0, +)
+            // Repeating the same heading in another capture adds evidence, not a new direction.
+            let directions = values.compactMap(\.sample.directionCount).max()
+            let headings = values.compactMap { item -> (heading: Double, weight: Double)? in
+                item.sample.headingRadians.map { ($0, item.sourceWeight) }
+            }
             let heading = headings.isEmpty ? nil : atan2(
-                headings.map(sin).reduce(0, +),
-                headings.map(cos).reduce(0, +)
+                headings.map { sin($0.heading) * $0.weight }.reduce(0, +),
+                headings.map { cos($0.heading) * $0.weight }.reduce(0, +)
             )
-            let gradientX = optionalMedian(values.map(\.gradientXUTPerM))
-            let gradientY = optionalMedian(values.map(\.gradientYUTPerM))
+            let profileGroups = Dictionary(grouping: values.flatMap { item in
+                (item.sample.directionalProfiles ?? []).map { profile in
+                    (profile: profile, weight: item.sourceWeight)
+                }
+            }, by: { $0.profile.directionBin })
+            let directionalProfiles = profileGroups.map { directionBin, profiles in
+                func profileMean(_ value: (MagneticDirectionalProfile) -> Double?) -> Double? {
+                    let available = profiles.compactMap { item in
+                        value(item.profile).map { ($0, item.weight) }
+                    }
+                    return available.isEmpty ? nil : weightedMean(available)
+                }
+                return MagneticDirectionalProfile(
+                    directionBin: directionBin,
+                    magneticNormUT: weightedMean(profiles.map {
+                        ($0.profile.magneticNormUT, $0.weight)
+                    }),
+                    magneticXUT: profileMean(\.magneticXUT),
+                    magneticYUT: profileMean(\.magneticYUT),
+                    magneticZUT: profileMean(\.magneticZUT),
+                    observationCount: profiles.map(\.profile.observationCount).reduce(0, +)
+                )
+            }.sorted { $0.directionBin < $1.directionBin }
             var sample = GenericMagneticMapSample(x: x, y: y, magneticNormUT: norm)
             sample.magneticXUT = bx
             sample.magneticYUT = by
@@ -396,23 +453,43 @@ enum GenericMagneticMapStore {
             sample.observationCount = observations
             sample.directionCount = directions
             sample.headingRadians = heading
-            sample.gradientXUTPerM = gradientX
-            sample.gradientYUTPerM = gradientY
-            mergedSamples.append(sample)
+            sample.directionalProfiles = directionalProfiles.isEmpty ? nil : directionalProfiles
+            mergedByKey[key] = sample
         }
+        // Gradients must be derived from the balanced merged field. Blending old
+        // gradients recursively gives the most recently added capture too much weight.
+        for (key, sample) in mergedByKey {
+            var updated = sample
+            if let left = mergedByKey[Key(x: key.x - 1, y: key.y)],
+               let right = mergedByKey[Key(x: key.x + 1, y: key.y)] {
+                updated.gradientXUTPerM = (right.magneticNormUT - left.magneticNormUT) / (2 * cell)
+            }
+            if let down = mergedByKey[Key(x: key.x, y: key.y - 1)],
+               let up = mergedByKey[Key(x: key.x, y: key.y + 1)] {
+                updated.gradientYUTPerM = (up.magneticNormUT - down.magneticNormUT) / (2 * cell)
+            }
+            mergedByKey[key] = updated
+        }
+        var mergedSamples = Array(mergedByKey.values)
         mergedSamples.sort { lhs, rhs in
             lhs.y == rhs.y ? lhs.x < rhs.x : lhs.y < rhs.y
         }
-        let availableScales = [lhs.pdrStepLengthScale, rhs.pdrStepLengthScale]
-            .compactMap { $0 }
-            .sorted()
-        let mergedStepScale: Double? = if availableScales.isEmpty {
-            nil
-        } else if availableScales.count.isMultiple(of: 2) {
-            (availableScales[availableScales.count / 2 - 1]
-                + availableScales[availableScales.count / 2]) / 2
-        } else {
-            availableScales[availableScales.count / 2]
+        let mergedStepScale: Double? = switch (lhs.pdrStepLengthScale, rhs.pdrStepLengthScale) {
+        case (nil, nil): nil
+        case let (value?, nil), let (nil, value?): value
+        case let (left?, right?):
+            if lhs.localizationMode == .roomAreaKnownStart,
+               lhs.sourceDatasetKeys.count >= 2,
+               (right <= 0.22 || right / left < 0.70 || right / left > 1.43) {
+                // A dense stop-turn supplement often reaches the calibration clamp.
+                // Do not let one such capture replace an established walk scale.
+                left
+            } else {
+                weightedMean([
+                    (left, Double(max(lhs.sourceDatasetKeys.count, 1))),
+                    (right, Double(max(rhs.sourceDatasetKeys.count, 1))),
+                ])
+            }
         }
         return try GenericMagneticMapDocument(
             schemaVersion: GenericMagneticMapDocument.schemaVersion,
@@ -425,6 +502,7 @@ enum GenericMagneticMapStore {
             supportRadiusM: max(lhs.supportRadiusM, rhs.supportRadiusM),
             coordinateFrame: lhs.coordinateFrame,
             gridCellSizeM: cell,
+            samplesFollowPath: lhs.samplesFollowPath == true,
             pdrStepLengthScale: mergedStepScale
         ).validated()
     }
